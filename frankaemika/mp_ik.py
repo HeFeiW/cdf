@@ -17,6 +17,13 @@ import os
 CUR_PATH = os.path.dirname(os.path.realpath(__file__))
 from mlp import MLPRegression
 from nn_cdf import CDF
+import signal
+loop = True
+# 捕捉Ctrl+C信号
+def signal_handler(sig, frame):
+    print('Ctrl+C pressed, exiting...')
+    global loop
+    loop = False
 
 def main_loop():
     # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -58,7 +65,10 @@ def main_loop():
     # sphere_center = [0.3, 0.4, 0.5]
     # sphere_manager.create_sphere(sphere_center, 0.05, [0.8500, 0.3250, 0.0980, 1])
     q_init = torch.tensor([q0],requires_grad=True).to(device).float()
-    while True:
+    global loop
+    signal.signal(signal.SIGINT, signal_handler)  # 捕捉Ctrl+C信号
+
+    while loop:
         t0 = time.time()
         sphere_center = np.random.rand(3)*0.5
         # sphere_center[2] += 0.5
@@ -79,6 +89,11 @@ def main_loop():
         time.sleep(1.0)
         p.removeAllUserDebugItems()
         sphere_manager.delete_spheres()
+        # 捕捉键盘事件:escape键退出
+    # 释放资源
+    p.disconnect()
+    sphere_manager.delete_spheres()
+    return
 
 if __name__ == '__main__':
     main_loop()

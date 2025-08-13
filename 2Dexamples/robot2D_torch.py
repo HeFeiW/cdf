@@ -49,6 +49,9 @@ class Robot2D:
 
     # Forward kinematics for all joints (in robot coordinate system)
     def forward_kinematics_all_joints(self,x):
+        # 根据x（即关节角度的张量）计算所有关节的前向运动学
+        # 返回一个张量f，形状为(B, 2, num_joints + 1)，其中B是批次大小，2表示二维坐标，num_joints是关节数
+        # 每个关节的坐标是相对于机器人基座的
         self.B = x.size(0)
         L = torch.tril(torch.ones([self.num_joints,self.num_joints])).expand(self.B,-1,-1).float().to(self.device)
         x = x.unsqueeze(2)
@@ -94,6 +97,9 @@ class Robot2D:
         return J
 
     def surface_points_sampler(self,x,n=100):
+        # 在机器人每个关节之间采样n个点
+        # 返回一个张量kpts，形状为(B, 2, n * (num_joints - 1))，其中B是批次大小，2表示二维坐标，n是每个关节之间采样的点数
+        # 每个点的坐标是相对于机器人基座的
         self.B = x.size(0)
         f_rob = self.forward_kinematics_all_joints(x) # B,2,N
         N = f_rob.size(2)

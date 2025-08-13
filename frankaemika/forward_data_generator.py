@@ -21,7 +21,7 @@ import copy
 
 PI = math.pi
 
-class DataGenerator():
+class ForwardDataGenerator():
     def __init__(self,device):
         # panda model
         self.panda = PandaLayer(device)
@@ -37,7 +37,7 @@ class DataGenerator():
         # 20 x 20 x 20 = 8000个点
         # 相当于每个grid是 5cm x 5cm x 5cm
         self.workspace = [[-0.5,-0.5,0.0],[0.5,0.5,1.0]]
-        self.n_disrete = 20         # total number of x: n_discrete**3
+        self.n_disrete = 100         # total number of x: n_discrete**3
         self.batchsize = 20000       # batch size of q
         # self.pose = torch.eye(4).unsqueeze(0).to(self.device).expand(self.batchsize,4,4).float()
         self.epsilon = 1e-3         # distance threshold to filter data

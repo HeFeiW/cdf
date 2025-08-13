@@ -49,26 +49,36 @@ class CDF2D:
         self.q_grid_template =  torch.load(os.path.join(CUR_PATH,'data2D.pt'))
 
     def create_grid(self,nb_data):
+        # 创建一个网格，范围从-π到π
+        # 数据格式：
+        # q0:nb_data x nb_data 个点的横坐标
+        # q1:nb_data x nb_data 个点的纵坐标
         t = np.linspace(-math.pi,math.pi, nb_data)
         self.q0,self.q1 = np.meshgrid(t,t)
         return self.q0,self.q1
     
     def create_grid_torch(self,nb_data):
+        # 把create_grid的numpy版本改成torch版本
         q0,q1 = self.create_grid(nb_data)
         q0_torch = torch.from_numpy(q0).float()
         q1_torch = torch.from_numpy(q1).float()
         Q_sets = torch.cat([q0_torch.unsqueeze(-1),q1_torch.unsqueeze(-1)],dim=-1).view(-1,2)
         return Q_sets
 
-    def inference_sdf(self,q,obj_lists,return_grad = False):  
+    def inference_sdf(self,q,obj_lists,return_grad = False): 
+        # 返回每个输入的q到所有障碍物总体的最小signed distance
+        # sdf: (B,)/(B,2) (取决于是否return_grad)
         # using predefined object 
+        # 先用正运动学计算q参数下机器人形态（然后在上面采样很多点为kpts）
         kpts = self.robot.surface_points_sampler(q)
         B,N = kpts.size(0),kpts.size(1)
+        # 计算每个物体到每个采样点的signed distance
         dist = torch.cat([obj.signed_distance(kpts.reshape(-1,2)).reshape(B,N,-1) for obj in obj_lists],dim=-1)
-
+        # print('shape of dist: ',dist.shape)
         # using closest point from robot surface
         sdf = torch.min(dist,dim=-1)[0]
         sdf = sdf.min(dim=-1)[0]
+        print('shape of sdf: ',sdf.shape)
         if return_grad: 
             grad = torch.autograd.grad(sdf,q,torch.ones_like(sdf))[0]
             return sdf,grad
@@ -77,15 +87,19 @@ class CDF2D:
     def find_q(self,obj_lists,batchsize = None):
         # find q that makes d(x,q) = 0. x is the obstacle surface
         # using L-BFGS method
+        # 用L-BFGS方法寻找满足d(x,q)=0的q, 
+        # 即寻找障碍物表面的zero-level-set configuration space
         if not batchsize:
             batchsize = self.batchsize
             
         def cost_function(q):
+            # 定义代价为所有配置点到障碍物表面的最短距离的平方和
             #  find q that d(x,q) = 0
             # q : B,2
 
             d = self.inference_sdf(q,obj_lists)
             cost = torch.sum(d**2)
+            print('cost shape: ',cost.shape)
             return cost
         
         t0 = time.time()
@@ -94,24 +108,38 @@ class CDF2D:
         q0 =copy.deepcopy(q)
         res = minimize(
             cost_function, 
-            q, 
+            q, # 随机初始化q
             method='l-bfgs', 
             options=dict(line_search='strong-wolfe'),
-            max_iter=50,
+            max_iter=50,# 限制了优化的最大迭代次数为 50
             disp=0
             )
-        
+        # res 是优化结果，包含以下信息：
+            # res.x：优化后的配置空间点。
+            # res.success：优化是否成功。
+            # res.fun：优化后的目标函数值。
         d = self.inference_sdf(q,obj_lists).squeeze()
-
+        # 筛选出近似满足d(x,q) = 0的q
+        # q不是随机采样出来的吗？为什么要用q算的d来计算mask呢？？？#TODO
         mask = torch.abs(d) < 0.05
         q_valid,d = res.x[mask],d[mask]
         boundary_mask = ((q_valid > self.q_min) & (q_valid < self.q_max)).all(dim=1)
         final_q = q_valid[boundary_mask]
         q0 = q0[mask][boundary_mask]
         # print('number of q_valid: \t{} \t time cost:{}'.format(len(final_q),time.time()-t0))
+        # print('shape of q0: {}, shape of final_q: {}'.format(q0.shape,final_q.shape))
         return q0,final_q,res.x
     
     def generate_data(self,nbDiscretization=50):
+        # generate data for CDF
+        # 以nbDiscretization为一维上的网格采样数，
+        # 在task_space内均匀采样nbDiscretization*nbDiscretization个点
+        # 对每个采样点，计算其对应的q（很大计算量！），
+        # 并将其存储在data2D.npy中。
+        # 格式：字典{
+        #     'p': 采样点坐标，
+        #     'q': 对应的q坐标
+        # }
         x = torch.linspace(self.task_space[0][0],self.task_space[1][0],self.nbDiscretization).to(self.device)
         y = torch.linspace(self.task_space[0][1],self.task_space[1][1],self.nbDiscretization).to(self.device)
         xx,yy = torch.meshgrid(x,y)
@@ -122,11 +150,53 @@ class CDF2D:
         for i,_p in enumerate(p):
             grids = [Circle(center=_p,radius=0.001,device=device)]
             q = self.find_q(grids)[1]
-            data[i] = {
+            data[i] = {# 1个grid对应1个p，多个q
                 'p':_p,
                 'q':q
             }
-            print('i: {} \t number of q: {}'.format(i,len(q[1])))
+            if q.shape[0] == 0:
+                print('no q found for p: {}'.format(_p))
+            else:
+                print('i: {} \t number of q: {}'.format(i,len(q)))
+        # _p=torch.tensor([-1.0,-1.0]).to(self.device)
+        # i= 0
+        # grids = [Circle(center=torch.tensor(_p),radius=0.001,device=self.device)]
+        # q = self.find_q(grids)[1]
+        # data[0] = {
+        #     'p': _p,
+        #     'q': q
+        # }
+        # print(q)
+        # # 在一张图上画出所有的q点，并以颜色区分，
+        # # 在另一张图上画出采样点p，和每个q点对应的机器人状态，并用颜色对应
+        # # 将图像保存到本地
+        # q = q.detach().cpu().numpy()
+        # robot_plot2D.plot_2d_manipulators(joint_angles_batch=q,show_start_end=False,show_eef_traj=True)
+        # plt.title('Robot Manipulator for p: {}'.format(_p.cpu().numpy()))
+        # plt.xlabel('x')
+        # plt.ylabel('y')
+        # plt.xlim(-3.0, 3.0)
+        # plt.ylim(-3.0, 3.0)
+        # plt.gca().set_aspect('equal', adjustable='box')  # Make sure the pixels are square
+        # plt.grid()
+        # plt.scatter(_p[0].cpu().numpy(), _p[1].cpu().numpy(), color='red', label='Sample Point')
+        # plt.legend()
+        # plt.savefig(os.path.join(CUR_PATH,'robot_for_p_{}.png'.format(i)))
+        # # plt.show()
+        # plt.clf()
+        # plt.scatter(q[:,0], q[:,1], color='blue', label='q Points')
+        # plt.title('q Points for p: {}'.format(_p.cpu().numpy()))
+        # plt.xlabel('q1')
+        # plt.ylabel('q2')
+        # plt.xlim(-PI, PI)
+        # plt.ylim(-PI, PI)
+        # plt.gca().set_aspect('equal', adjustable='box')  # Make sure the pixels are square
+        # plt.grid()
+        # plt.scatter(_p[0].cpu().numpy(), _p[1].cpu().numpy(), color='red', label='Sample Point')
+        # plt.legend()
+        # plt.savefig(os.path.join(CUR_PATH,'q_points_for_p_{}.png'.format(i)))
+        # # plt.show() 
+
         np.save(os.path.join(CUR_PATH,'data2D.npy'),data)
         data = np.load(os.path.join(CUR_PATH,'data2D.npy'),allow_pickle=True).item()
         max_q_per_x = 200
@@ -151,16 +221,23 @@ class CDF2D:
             method = 'online_computation'
         if method == 'offline_grid':
             if not hasattr(self,'q_list_template'):
+                # 在obj_lists中采样障碍物表面点
                 obj_points = torch.cat([obj.sample_surface(200) for obj in obj_lists])
-                grid = self.x_to_grid(obj_points)      
+                # 每个表面点找到对应的网格索引
+                grid = self.x_to_grid(obj_points)   
+                print('shape of grid: ',grid.shape)
+                # 从q_grid_template中获取grid对应的q点集合   
                 q_list_template = (self.q_grid_template[grid[:,0],grid[:,1],:,:]).reshape(-1,2)
                 self.q_list_template = q_list_template[q_list_template[:,0] != torch.inf]
+            # 计算q和q_list_template之间的距离矩阵
             dist = torch.norm(q.unsqueeze(1) - self.q_list_template.to(self.device).unsqueeze(0),dim=-1)
+            print('shape of dist: ',dist.shape)
         if method == 'online_computation':
             if not hasattr(self,'q_0_level_set'):
                 self.q_0_level_set = self.find_q(obj_lists)[1]
+            print('shape of q_0_level_set: ',self.q_0_level_set.shape)
             dist = torch.norm(q.unsqueeze(1) - self.q_0_level_set.unsqueeze(0),dim=-1)
-  
+        # 取每个q点到所有障碍物表面点的最小距离
         d = torch.min(dist,dim=-1)[0]
         # compute sign of d, based on the sdf
         # exit()
@@ -205,6 +282,7 @@ class CDF2D:
         return q0,q
 
     def plot_sdf(self,obj_lists, ax):
+        # 初始化图像
         ax.set_aspect('equal', 'box')  # Make sure the pixels are square
         ax.set_title('Configuration space', size=30)  # Add a title to your plot
         ax.set_xlabel('q1', size=20)
@@ -213,18 +291,27 @@ class CDF2D:
         ax.set_xlim(axis_limits)
         ax.set_ylim(axis_limits)
         ax.tick_params(axis='both', labelsize=20)
-
+        # 计算 SDF
         sdf = self.inference_sdf(self.Q_grid,obj_lists)
         sdf = sdf.detach().cpu().numpy()
-
+        # 绘制等高线
         ax.contour(self.q0, self.q1, sdf.reshape(self.nbData, self.nbData), levels=[0], linewidths=6, colors='black', alpha=1.0)
         ct = ax.contourf(self.q0, self.q1, sdf.reshape(self.nbData, self.nbData), levels=6, linewidths=1, cmap='coolwarm')
         ax.clabel(ct, inline=False, fontsize=15, colors='black', fmt='%.1f')
 
         # fig = plt.gcf()  # Get the current figure
+        # fig.set_size_inches(10, 8)  # Set the figure size
         # fig.colorbar(ct, ax=ax)  # Add a colorbar to your plot
+        # # 保存 plt 图像到本地
+        # fig.savefig(os.path.join(CUR_PATH,'sdf.png'), dpi=300, bbox_inches='tight')
 
     def shooting(self,q0,obj_lists,dt = 1e-2,timestep = 500,method = 'SDF'):
+        # 沿着测地线移动（即正交于梯度方向）
+        # q0: (N,2) 初始配置点
+        # obj_lists: list of objects in the scene
+        # dt: time step
+        # timestep: number of time steps
+        # method: 'SDF' or 'CDField'
         q = q0
         q.requires_grad = True
         q_list = []
@@ -234,7 +321,7 @@ class CDF2D:
             if method == 'CDField':
                 d,g = self.calculate_cdf(q,obj_lists,return_grad=True)
             g = torch.nn.functional.normalize(g,dim=-1)
-            g_orth = torch.stack([g[:,1],-g[:,0]],dim=-1)
+            g_orth = torch.stack([g[:,1],-g[:,0]],dim=-1)# 对二维向量g进行正交化（两个分量互换并取负号）
             # if g_orth[:,1] < 0:
             #     g_orth = -g_orth
             q = q + dt*g_orth
@@ -264,6 +351,7 @@ class CDF2D:
 
     def plot_cdf(self,ax,obj_lists,method='online_computation'):
         d = self.calculate_cdf(self.Q_grid,obj_lists,method).detach().cpu().numpy()
+        print('shape of d:{}'.format(d.shape))
         ax.set_aspect('equal', 'box')  # Make sure the pixels are square
         ax.set_title('Configuration space', size=30)  # Add a title to your plot
         ax.set_xlabel('q1', size=20)
@@ -289,6 +377,7 @@ class CDF2D:
         return q0,q
     
 def plot_fig1(obj_lists):
+    #obj_lists: 场景中的障碍物列表
     color_list = ['magenta','orange', 'cyan', 'green',  'purple', 'navy']
     fig1, ax1 = plt.subplots(figsize=(10,8))  # Create the first plot
     fig2, ax2 = plt.subplots(figsize=(10, 8))  # Create the third plot
@@ -315,7 +404,9 @@ def plot_fig1(obj_lists):
     projection_q0 = torch.tensor([[0.0,-1.5],[2.0,2.0],[-1.5,-2.0]]).to(device)
     shooting_tangent = cdf.shooting(shooting_q0,obj_lists,method='SDF')
     shooting_gradient = cdf.shooting_proj(projection_q0,obj_lists,method='SDF')
-    shooting_q_sdf = np.concatenate([shooting_gradient,shooting_tangent],axis=0)    
+    shooting_q_sdf = np.concatenate([shooting_gradient,shooting_tangent],axis=0)
+    print('shape of shooting_q_sdf: ',shooting_q_sdf.shape)
+
     for c,shoot in enumerate(shooting_q_sdf):
         ax1.plot(shoot[:,0],shoot[:,1],'r--',color = color_list[c],linewidth=3)
         ax1.plot(shoot[0,0],shoot[0,1],'*',color = color_list[c],markersize=10)
@@ -335,7 +426,16 @@ def plot_fig1(obj_lists):
         else:
             # geodesic shooting
             robot_plot2D.plot_2d_manipulators(joint_angles_batch=shoot[0:500:20],ax = axs[c*2+1],color = color_list[c],show_start_end=False,show_eef_traj=True) 
-    plt.show()
+    # 保存plt图像到本地
+    fig1.suptitle('Configuration Space Distance Field', size=30)
+    ax1.set_title('SDF + Gradient Shooting', size=25)  # Add a title to your plot
+    ax2.set_title('CDF + Gradient Shooting', size=25)  # Add a title to your plot
+    fig1.tight_layout()
+    fig2.tight_layout()
+    fig.tight_layout()
+    fig1.savefig(os.path.join(CUR_PATH,'fig1_sdf.png'), dpi=300, bbox_inches='tight')
+    fig2.savefig(os.path.join(CUR_PATH,'fig1_cdf.png'), dpi=300, bbox_inches='tight')
+    fig.savefig(os.path.join(CUR_PATH,'fig1_shooting.png'), dpi=300, bbox_inches='tight')
 
 def plot_projection(obj_lists):
     fig1,(ax1,ax2,ax3) = plt.subplots(1,3,figsize=(24,8))
@@ -377,9 +477,21 @@ def plot_projection(obj_lists):
                 robot_base=True,  # to visualize the base
                 color='lightgreen'  # Set the color of the robot
             )
-    cdf.plot_objects(ax,obj_lists)
-
-    plt.show()
+    cdf.plot_objects(ax,obj_lists) 
+    ax.set_title('Robot Manipulator in Task Space', size=25)  # Add a title to your plot
+    ax.set_xlabel('x', size=20)
+    ax.set_ylabel('y', size=20)
+    ax.set_xlim(-3.0, 3.0)
+    ax.set_ylim(-3.0, 3.0)
+    ax.set_aspect('equal', 'box')  # Make sure the pixels are square
+    ax.tick_params(axis='both', labelsize=20)
+    fig.tight_layout()
+    fig1.tight_layout()
+    fig.savefig(os.path.join(CUR_PATH,'fig2_projection.png'), dpi=300,
+                    bbox_inches='tight')
+    fig1.savefig(os.path.join(CUR_PATH,'fig2_cdf.png'), dpi=300,
+                    bbox_inches='tight')
+    
 
 if __name__ == "__main__":
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -390,9 +502,12 @@ if __name__ == "__main__":
     scene_2 = [Circle(center=torch.tensor([2.3,-2.3]),radius=0.3,device=device),
                         Circle(center=torch.tensor([0.0,2.45]),radius=0.3,device=device),
                         ]
+    scene_3 = [Circle(center=torch.tensor([2.5,0.0]),radius=0.01,device=device),
+                        Circle(center=torch.tensor([0.0, 1.0]),radius=0.01,attract=True,device=device)]
+    # a,b,c= cdf.find_q(scene_1,2)
+    # print('number of q in scene_1: ',len(b))
+    # # # plot the figure in the paper
+    plot_fig1(scene_3)
 
-    # # plot the figure in the paper
-    plot_fig1(scene_1)
-
-    # # plot gradient projection
-    # plot_projection(scene_2)
+    # # # plot gradient projection
+    plot_projection(scene_3)

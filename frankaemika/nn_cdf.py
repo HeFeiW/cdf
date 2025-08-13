@@ -32,9 +32,9 @@ class CDF:
         # # # uncomment these lines to process the generated data and train your own CDF
         # self.raw_data = np.load(os.path.join(CUR_PATH,'data.npy'),allow_pickle=True).item()
         # self.process_data(self.raw_data)
-        self.data_path = os.path.join(CUR_PATH,'data.pt') 
-        self.data = self.load_data(self.data_path)
-        self.len_data = len(self.data['k'])
+        # self.data_path = os.path.join(CUR_PATH,'data.pt') 
+        # self.data = self.load_data(self.data_path)
+        # self.len_data = len(self.data['k'])
 
         self.batch_x = 10
         self.batch_q = 100
@@ -47,6 +47,8 @@ class CDF:
         import pytorch3d.ops 
         keys = list(data.keys())  # Create a copy of the keys
         processed_data = {}
+        print('data_shape:',{k:data[k].shape for k in keys})
+
         for k in keys:
             if len(data[k]['q']) == 0:
                 data.pop(k)
@@ -74,7 +76,7 @@ class CDF:
             'q': torch.cat([processed_data[k]['q'].unsqueeze(0) for k in processed_data.keys()],dim=0),
             'k':torch.tensor([k for k in processed_data.keys()]).to(self.device)
         }
-
+        print('final_data:',final_data['x'].shape,final_data['q'].shape,final_data['k'].shape)
         torch.save(final_data,os.path.join(CUR_PATH,'data.pt'))
         return data
     
@@ -192,7 +194,7 @@ class CDF:
                 if iter % 10 == 0:
                     print(f"Epoch:{iter}\tMSE Loss: {d_loss.item():.3f}\tEikonal Loss: {eikonal_loss.item():.3f}\tTension Loss: {tension_loss.item():.3f}\tGradient Loss: {gradient_loss.item():.3f}\tTotal loss:{loss.item():.3f}\tTime: {time.strftime('%H:%M:%S', time.gmtime())}")
                     model_dict[iter] = model.state_dict()
-                    # torch.save(model_dict, os.path.join(CUR_PATH,'model_dict.pt'))
+                    torch.save(model_dict, os.path.join(CUR_PATH,'my_model_dict.pt'))
         return model
     
     def inference(self,x,q,model):
@@ -321,6 +323,6 @@ if __name__ == "__main__":
     
     model = MLPRegression(input_dims=10, output_dims=1, mlp_layers=[1024, 512, 256, 128, 128],skips=[], act_fn=torch.nn.ReLU, nerf=True)
     # model.load_state_dict(torch.load(os.path.join(CUR_PATH,'model_dict.pt'))[19900])
-    model.load_state_dict(torch.load(os.path.join(CUR_PATH,'model_dict.pt'))[49900])
+    model.load_state_dict(torch.load(os.path.join(CUR_PATH,'my_model_dict.pt'))[49900])
     model.to(device)
     cdf.eval_nn(model)

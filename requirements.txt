@@ -3,3 +3,10 @@ numpy
 matplotlib
 pybullet
 pytorch-minimize
+numpy
+pyyaml
+trimesh
+argparse
+pyglet==1.5.0
+matplotlib
+pytorch3d

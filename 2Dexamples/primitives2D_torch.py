@@ -14,15 +14,20 @@ import matplotlib.patches as patches
 import torch
 
 class Circle:
-    def __init__(self,center,radius,device='cpu'):
+    def __init__(self,center,radius,attract = False, device='cpu'):
         self.center = center.to(device)
         self.radius = radius
         self.device = device
-
+        # self.attract = attract
     def signed_distance(self,p):
         # p: N x 2
+        # 对于attract=True的情况，返回距离为正值
+        # 对于attract=False的情况，返回距离为负值
         N = p.size(0)
-        return (torch.norm(p-self.center.unsqueeze(0).expand(N,-1),dim=1) - self.radius).unsqueeze(-1)
+        dist = ((torch.norm(p-self.center.unsqueeze(0).expand(N,-1),dim=1) - self.radius).unsqueeze(-1))
+        # if not self.attract:
+        #     dist = -dist
+        return dist
 
     def normal(self,p):
         d = self.signed_distance(p)
