@@ -201,6 +201,7 @@ class CDF:
         model.eval()
         x,q = x.to(self.device),q.to(self.device)
         # q.requires_grad = True
+        print(f'x:{x.shape}, q:{q.shape}')
         x_cat = x.unsqueeze(1).expand(-1,len(q),-1).reshape(-1,3)
         q_cat = q.unsqueeze(0).expand(len(x),-1,-1).reshape(-1,7)
         inputs = torch.cat([x_cat,q_cat],dim=-1)

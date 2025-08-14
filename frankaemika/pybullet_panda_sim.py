@@ -33,6 +33,7 @@ class PandaSim():
 
         self.panda = self.bullet_client.loadURDF(os.path.join(CUR_PATH,"panda_urdf/panda.urdf"), self.base_pos,
                                                  self.base_rot, useFixedBase=True, flags=flags)
+        print("panda=", self.panda)
         self.reset()
         self.t = 0.
         # self.set_joint_positions(rp)
