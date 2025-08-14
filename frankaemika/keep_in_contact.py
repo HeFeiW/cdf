@@ -22,7 +22,7 @@ def main_loop():
     # 在zero-level-set上移动的step_size
     step_size = 0.01
     # 设置显示模式
-    display_mode = 'DIRECT'  # 可选 'GUI' 或 'DIRECT'
+    display_mode = 'GUI'  # 可选 'GUI' 或 'DIRECT'
     if display_mode == 'GUI':
         p.connect(p.GUI, options='--background_color_red=0.5 --background_color_green=0.5' +
                                     ' --background_color_blue=0.5 --width=1600 --height=1000')
@@ -49,7 +49,7 @@ def main_loop():
     if display_mode == 'GUI':
         p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
         p.configureDebugVisualizer(lightPosition=[5, 5, 5])
-        p.resetDebugVisualizerCamera(cameraDistance=1.5, cameraYaw=145, cameraPitch=0, cameraTargetPosition=[0, 0, 0.6])
+        p.resetDebugVisualizerCamera(cameraDistance=1.5, cameraYaw=90, cameraPitch=0, cameraTargetPosition=[0, 0, 0.6])
     p.setAdditionalSearchPath(pd.getDataPath())
         
     ## spawn franka robot
@@ -65,17 +65,17 @@ def main_loop():
     p.setTimeStep(delta_t)
     p.setRealTimeSimulation(0)
 
-    # ----------- load box -----------
-    box_size = np.array([0.6,0.01,0.3])
-    box_center = np.array([0.0,0.3,0.3])
-    box = p.createVisualShape(p.GEOM_BOX, halfExtents=box_size, rgbaColor=[0.8500, 0.3250, 0.0980, 1.0])
-    p.createMultiBody(baseVisualShapeIndex=box,
-                                        basePosition=box_center)
+    # # ----------- load box -----------
+    # box_size = np.array([0.6,0.01,0.3])
+    # box_center = np.array([0.0,0.3,0.3])
+    # box = p.createVisualShape(p.GEOM_BOX, halfExtents=box_size, rgbaColor=[0.8500, 0.3250, 0.0980, 1.0])
+    # p.createMultiBody(baseVisualShapeIndex=box,
+    #                                     basePosition=box_center)
 
     # ------------- load a object to push -----------
-    obj_size = np.array([0.3,0.6,0.3])
-    obj_center = np.array([0.0, 0.0, 0.5])
-    obj = p.createVisualShape(p.GEOM_BOX, halfExtents=obj_size, rgbaColor=[0.8500, 0.3250, 0.0980, 1.0])
+    obj_size = np.array([0.2,0.2,0.2])
+    obj_center = np.array([0.5, 0.0, 0.0])
+    obj = p.createVisualShape(p.GEOM_BOX, halfExtents=obj_size, rgbaColor=[0.8500, 0.3250, 0.0980, 0.1])
     p.createMultiBody(baseVisualShapeIndex=obj,
                                         basePosition=obj_center)
     
@@ -111,13 +111,15 @@ def main_loop():
                 print('object out of task space')
                 break
             in_contact = p.getContactPoints(bodyA=robot.panda, bodyB=obj)
-            if not in_contact:
+            print(f'contact points: {in_contact}')
+            if len(in_contact) == 0:
                 print('not in contact')
                 q = q_init
                 x = torch.from_numpy(np.array([position])).to(device).float()
                 d,grad = cdf.inference_d_wrt_q(x,q,model)
                 q_next = cdf.projection(q,d,grad)
                 q_init = q_next
+                print(f'd: {d}, grad: {grad}, q_next: {q_next}')
                 robot.set_joint_positions(q_next[0].data.cpu().numpy())
             else:
                 print('not reached goal')
@@ -131,6 +133,7 @@ def main_loop():
                 q_normal = q_normal / torch.norm(q_normal, dim=-1, keepdim=True)
                 q_next = q - step_size * q_normal.unsqueeze(0)
                 q_init = q_next
+                print(f'd: {d}, grad: {grad}, q_next: {q_next}')
                 robot.set_joint_positions(q_next[0].data.cpu().numpy())
             p.stepSimulation()
             time.sleep(delta_t*2.0)
