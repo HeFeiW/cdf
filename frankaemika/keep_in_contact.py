@@ -29,10 +29,8 @@ def sample_points_from_box(obj_id, num_samples=100):
         z = np.random.uniform(-half_extents[2], half_extents[2])
     #    Transform the point to the object's local space and orient it
         point = np.array([x, y, z])
-        print(p.getMatrixFromQuaternion(orientation))
         point = np.dot(np.array(p.getMatrixFromQuaternion(orientation)).reshape(-1, 3), point) + np.array(position)
         points.append(point)
-    print(f'Sampled points shape: {np.array(points).shape}')  # Debugging line to check the shape of sampled points
     # Convert to numpy array
     return np.array(points)
 def main_loop():
@@ -81,12 +79,16 @@ def main_loop():
     robot = PandaSim(p, base_pos, base_rot)
     q0 = robot.get_joint_positions()
     q_init = torch.tensor([q0],requires_grad=True).to(device).float()
+    p.enableJointForceTorqueSensor(robot.panda, -1, enableSensor=True)
     # NOTE: need high frequency
     hz = 1000
     delta_t = 1.0 / hz
     p.setGravity(0, 0, -9.81)
     p.setTimeStep(delta_t)
     p.setRealTimeSimulation(0)
+    # # ----------- load plane -----------
+    plane_id = p.createCollisionShape(p.GEOM_PLANE)
+    p.createMultiBody(baseMass=0, baseCollisionShapeIndex=plane_id, basePosition=[0, 0, 0])
     # # ----------- load box -----------
     # box_size = np.array([0.6,0.01,0.3])
     # box_center = np.array([0.0,0.3,0.3])
@@ -100,8 +102,7 @@ def main_loop():
     obj_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=obj_size, rgbaColor=[0.8500, 0.3250, 0.0980, 0.1])
     obj_collision = p.createCollisionShape(p.GEOM_BOX, halfExtents=obj_size)
     obj = p.createMultiBody(baseMass=1.0, baseCollisionShapeIndex=obj_collision, baseVisualShapeIndex=obj_visual, basePosition=obj_center)
-
-    
+    p.changeDynamics(obj, -1, lateralFriction=0.5, spinningFriction=0.1, rollingFriction=0.1)
     # --- initialize the task space  ---
     task_space = np.array([[-0.5, 0.5], # x-axis
                           [-0.5, 0.5], # y-axis
@@ -114,41 +115,50 @@ def main_loop():
             p.stepSimulation()
         # ---- initialize the object position and orientation ----
         # obj_center = np.random.rand(3) * (task_space[:, 1] - task_space[:, 0]) + task_space[:, 0]
-        obj_center = np.array([0.0, 0.0, 0.0])
-        obj_center[2] = task_space[2, 0] + obj_size[2] / 2.0
-        obj_orientation_Euler = np.random.rand(3) * np.pi * 2.0 - np.pi
-        obj_orientation = p.getQuaternionFromEuler(obj_orientation_Euler)
+        # obj_center = np.array([0.0, 0.0, 0.0])
+        obj_center[2] = task_space[2, 0] + obj_size[2] / 2.0 + 0.1  # Ensure the object is above the ground
+        # obj_orientation_Euler = np.random.rand(3) * np.pi * 2.0 - np.pi
+        # obj_orientation = p.getQuaternionFromEuler(obj_orientation_Euler)
+        obj_orientation = [0, 0, 0, 1]  # No rotation
         p.resetBasePositionAndOrientation(obj, obj_center, obj_orientation)
         p.resetBaseVelocity(obj, linearVelocity=[0, 0, 0], angularVelocity=[0, 0, 0])
+        print(f'obj center: {obj_center}, obj orientation: {obj_orientation}')
+        while(True):
+                keys = p.getKeyboardEvents()
+                if p.B3G_SPACE in keys and keys[p.B3G_SPACE] & p.KEY_WAS_TRIGGERED:
+                    print('space key pressed')
+                    break
 
         while(True):
             print(f'joint positions:{robot.get_joint_positions()}')
+            torques = p.getJointStates(robot.panda, range(pandaNumDofs))
+            print(f'torques: {torques}')
+            print(f'')
             position, orientation = p.getBasePositionAndOrientation(obj)
             # check if the object is out of the task space
-            if (position[0] < task_space[0, 0] or position[0] > task_space[0, 1] or
-                position[1] < task_space[1, 0] or position[1] > task_space[1, 1] or
-                position[2] < task_space[2, 0] or position[2] > task_space[2, 1]):
-                print('object out of task space')
-                break
+            # if (position[0] < task_space[0, 0] or position[0] > task_space[0, 1] or
+            #     position[1] < task_space[1, 0] or position[1] > task_space[1, 1] or
+            #     position[2] < task_space[2, 0] or position[2] > task_space[2, 1]):
+            #     print('object out of task space')
+            #     break
             in_contact = bool(p.getContactPoints(bodyA=robot.panda, bodyB=obj))
-            print(f'contact points: {in_contact}')
             if not in_contact:
                 print('not in contact')
                 q = q_init
                 print(f'q_init: {q_init}')
                 x = sample_points_from_box(obj, num_samples=100)
-                x = torch.from_numpy(np.array([x])).to(device).float()
+                x = torch.from_numpy(np.array(x)).to(device).float()
                 d,grad = cdf.inference_d_wrt_q(x,q,model)
                 q_next = cdf.projection(q,d,grad)
                 q_init = q_next
-                # print(f'd: {d}, grad: {grad}, q_next: {q_next}')
+                print(f'd: {d}, grad: {grad}, q_next: {q_next}')
                 robot.set_joint_positions(q_next[0].data.cpu().numpy())
             else:
                 print('not reached goal')
                 q = q_init
                 # 在obj表面上采样位置
                 x = sample_points_from_box(obj, num_samples=1)
-                x = torch.from_numpy(np.array([x])).to(device).float()
+                x = torch.from_numpy(np.array(x)).to(device).float()
                 d,grad = cdf.inference_d_wrt_q(x,q,model)
                 print(f'in contact, d: {d}, grad: {grad}')
                 # 找到与grad正交的方向
@@ -158,8 +168,17 @@ def main_loop():
                 q_normal = q_normal / torch.norm(q_normal, dim=-1, keepdim=True)
                 q_next = q - step_size * q_normal
                 q_init = q_next
-                # print(f'd: {d}, grad: {grad}, q_next: {q_next}, q_normal: {q_normal}')
+                while(True):
+                    keys = p.getKeyboardEvents()
+                    if p.B3G_SPACE in keys and keys[p.B3G_SPACE] & p.KEY_WAS_TRIGGERED:
+                        print('space key pressed')
+                        break
+                print(f'd: {d}, grad: {grad}, q_next: {q_next}, q_normal: {q_normal}')
                 robot.set_joint_positions(q_next[0].data.cpu().numpy())
+
+            # 等待用户按键space进入下一步
+            if display_mode == 'DIRECT':
+                continue
             p.stepSimulation()
             time.sleep(delta_t*2.0)
 

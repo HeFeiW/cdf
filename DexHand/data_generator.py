@@ -156,7 +156,7 @@ class DataGenerator():
                 'idx':  idx.detach().cpu().numpy(),
             }
             print(f'point {i} finished, number of q: {len(q)}')
-        np.save(os.path.join(save_path,'data_again.npy'),data)
+        np.save(os.path.join(save_path,'data.npy'),data)
 
 def analysis_data(x):
     # Compute the squared Euclidean distance between each row

@@ -1,3 +1,12 @@
 *.npy
 */__pycache__/*
 *.pyc
+DexHand/src/
+DexHand/build/
+DexHand/log/
+DexHand/install/
+runs/
+*png
+# 除了model_dict.pt之外的所有pt文件
+!model_dict.pt
+*.pt
