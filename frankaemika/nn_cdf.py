@@ -13,6 +13,7 @@ import sys
 import torch
 import math
 import time
+import argparse
 CUR_PATH = os.path.dirname(os.path.realpath(__file__))
 from mlp import MLPRegression
 sys.path.append(os.path.join(CUR_PATH,'../../RDF'))
@@ -25,7 +26,7 @@ np.random.seed(10)
 # torch.autograd.set_detect_anomaly(True)
 
 class CDF:
-    def __init__(self,device,writer=None) -> None:
+    def __init__(self,device,data_path,model_dict,signed_distance=False,writer=None) -> None:
         # device
         self.device = device  
         self.writer = writer
@@ -33,17 +34,19 @@ class CDF:
         self.batch_q = 100
         self.max_q_per_link = 100
         # # # uncomment these lines to process the generated data and train your own CDF
-        # self.raw_data = np.load(os.path.join(CUR_PATH,'data.npy'),allow_pickle=True).item()
+        # self.raw_data = np.load(os.path.join(CUR_PATH,'data_again.npy'),allow_pickle=True).item()
         # self.process_data(self.raw_data)
-        self.data_path = os.path.join(CUR_PATH,'data.pt') 
+        self.data_path = os.path.join(CUR_PATH,data_path) 
         self.data = self.load_data(self.data_path)
         self.len_data = len(self.data['k'])
-        
+        self.signed_distance = signed_distance
         # panda robot
         self.panda = PandaLayer(device)
-        self.signed_distance = False
-        self.bp_sdf = bf_sdf.BPSDF(8,-1.0,1.0,self.panda,device)
-        self.bp_sdf_model = torch.load(os.path.join(CUR_PATH,'../../RDF/models/BP_8.pt'))
+        
+        self.bp_sdf_model_path = os.path.join(CUR_PATH,'../../RDF/models/panda/BP_8.pt')
+        self.bp_sdf = bf_sdf.BPSDF(8,-1.0,1.0,self.panda,self.bp_sdf_model_path,device)
+        self.bp_sdf_model = torch.load(self.bp_sdf_model_path)
+        self.model_dict = model_dict
 
     def process_data(self,data):
         # 从原始数据（data）中降采样（pytorch3d.ops.sample_farthest_points）每个关节的采样点,
@@ -97,7 +100,7 @@ class CDF:
             'k':torch.tensor([k for k in processed_data.keys()]).to(self.device)
         }
         # print('final_data:',final_data['x'].shape,final_data['q'].shape,final_data['k'].shape)
-        torch.save(final_data,os.path.join(CUR_PATH,'data.pt'))
+        torch.save(final_data,os.path.join(CUR_PATH,'data_again.pt'))
         return data
     
     def load_data(self,path):
@@ -182,12 +185,13 @@ class CDF:
         mask =  (d_ts < 0).transpose(0,1)
         d[mask] = -d[mask]
         grad_final = grad_tensor.gather(3,d_min_idx.unsqueeze(-1).unsqueeze(-1).expand(-1,-1,7,7))[:,:,:,0]
+        grad_final[mask] = -grad_final[mask]  # 对有符号距离的梯度也取负号
         return d, grad_final
     def compute_sdf(self,x,q,return_index = False):
         # x : (Nx,3)
         # q : (Nq,7)
         # return_index : if True, return the index of link that is closest to x
-        # return d : (Nq)
+        # return d : (Nq,Nx) the signed distance from x to q
         # return idx : (Nq) optional
 
         pose = torch.eye(4).unsqueeze(0).to(self.device).expand(len(q),4,4).float()
@@ -281,14 +285,15 @@ class CDF:
                         self.writer.add_scalar('loss/tension_loss', tension_loss.item(), iter)
                         self.writer.add_scalar('loss/gradient_loss', gradient_loss.item(), iter)
                         self.writer.add_scalar('loss/total_loss', loss.item(), iter)
-                    torch.save(model_dict, os.path.join(CUR_PATH,'my_model_dict.pt'))
+                    torch.save(model_dict, os.path.join(CUR_PATH,self.model_dict))
         return model
     
     def inference(self,x,q,model):
         model.eval()
         x,q = x.to(self.device),q.to(self.device)
         # q.requires_grad = True
-        print(f'x:{x.shape}, q:{q.shape}')
+        # x:(len(x),3)
+        # q:(len(q),7)
         x_cat = x.unsqueeze(1).expand(-1,len(q),-1).reshape(-1,3)
         q_cat = q.unsqueeze(0).expand(len(x),-1,-1).reshape(-1,7)
         inputs = torch.cat([x_cat,q_cat],dim=-1)
@@ -326,8 +331,8 @@ class CDF:
 
         if eval_acc:
             # bp_sdf model
-            bp_sdf = bf_sdf.BPSDF(8,-1.0,1.0,self.panda,device)
-            bp_sdf_model = torch.load(os.path.join(CUR_PATH,'../../RDF/models/BP_8.pt'))
+            bp_sdf = self.bp_sdf
+            bp_sdf_model = torch.load(self.bp_sdf_model_path)
 
             res = []
             for i in range (1000):
@@ -351,8 +356,8 @@ class CDF:
             print(f'MAE:{res[:,0].std()}\tRMSE:{res[:,1].std()}\tSR:{res[:,2].std()}')
 
     def eval_nn_noise(self,model,num_iter = 3):
-            bp_sdf = bf_sdf.BPSDF(8,-1.0,1.0,self.panda,device)
-            bp_sdf_model = torch.load(os.path.join(CUR_PATH,'../../RDF/models/BP_8.pt'))
+            bp_sdf = self.bp_sdf
+            bp_sdf_model = torch.load(self.bp_sdf_model_path)
 
             res = []
             for i in range (1000):
@@ -446,11 +451,11 @@ class CDF:
         # input: [x,q] (B,3+7)
         model = MLPRegression(input_dims=10, output_dims=1, mlp_layers=[1024, 512, 256, 128, 128],skips=[], act_fn=torch.nn.ReLU, nerf=True)
         # 取最后一个（字典值最大的）epoch的模型
-        epoches = torch.load(os.path.join(CUR_PATH,'model_dict.pt')).keys()
+        epoches = torch.load(os.path.join(CUR_PATH,self.model_dict)).keys()
         epoches = sorted(epoches)
         model.to(device)
         print(f'epoches:{epoches[-1]}')
-        model.load_state_dict(torch.load(os.path.join(CUR_PATH,'model_dict.pt'))[epoches[-1]])
+        model.load_state_dict(torch.load(os.path.join(CUR_PATH,self.model_dict))[epoches[-1]])
 
         # model.load_state_dict(torch.load(os.path.join(CUR_PATH,'model_dict.pt'))[])
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
@@ -508,125 +513,241 @@ class CDF:
                     # model_dict[iter] = model.state_dict()
                     # torch.save(model_dict, os.path.join(CUR_PATH,'my_model_dict.pt'))
         return model
-    def my_eval(self):
+    def my_eval_1(self,model):
         # model
         # input: [x,q] (B,3+7)
-        model = MLPRegression(input_dims=10, output_dims=1, mlp_layers=[1024, 512, 256, 128, 128],skips=[], act_fn=torch.nn.ReLU, nerf=True)
-        model.to(device)
-        model.load_state_dict(torch.load(os.path.join(CUR_PATH,'model_dict.pt'))[49900])
         # 在data中取出8个构成cube的点
-        cube_pos = [0,0,10] # cube idx最小的一个顶点的坐标
-        cube_edge = 1 # cube的边长
-        print(f'data_x_shape:{self.data["x"].shape}')
-        cube_points  = torch.stack([self.data['x'][20*20*x+20*y+z] \
-                                                    for x in [cube_pos[0],cube_pos[0]+cube_edge] \
-                                                    for y in [cube_pos[1],cube_pos[1]+cube_edge]\
-                                                    for z in [cube_pos[2],cube_pos[2]+cube_edge]]).float().to(device)
-        cube_ground_truth_q  = torch.stack([self.data['q'][20*20*x+20*y+z] \
-                                                    for x in [cube_pos[0],cube_pos[0]+cube_edge] \
-                                                    for y in [cube_pos[1],cube_pos[1]+cube_edge]\
-                                                    for z in [cube_pos[2],cube_pos[2]+cube_edge]]).float().to(device)
-        print(f'cube_points:{cube_ground_truth_q.shape}')
-        DoF = 7
-        panda = PandaLayer(self.device)
-        bp_sdf = bf_sdf.BPSDF(8,-1.0,1.0,panda,device)
-        bdf_model = torch.load(os.path.join(CUR_PATH,'../../RDF/models/BP_8.pt'))
-        q_max = panda.theta_max
-        q_min = panda.theta_min
-        # device
-        self.device = device
-        # 在DoF维度上采样test_sample_num个点
-        test_sample_num = 1000
-        q_sampled = q_min + torch.rand(test_sample_num,DoF).to(self.device)*(q_max-q_min)
-        q_sampled.requires_grad = True
-        # 获得模型预测的距离和梯度
-        pred_d, pred_grad = self.inference_d_wrt_q(cube_points,q_sampled,model,return_grad = True)
-        # 计算ground truth的距离和梯度
-        from data_generator import DataGenerator
-        data_generator = DataGenerator(self.device)
-        gt_d = data_generator.distance_q(cube_points,q_sampled)
-        print(f'pred_d:{pred_d.shape}, gt_d:{gt_d.shape}')
-        d_error = pred_d - gt_d
-        # 把q_sampled, d_error, pred_grad, pred_d, gt_d reshape成(batch_size, DoF), 
-        # 叠在一起，然后按照d_error的大小排序
-        q_sampled = q_sampled.reshape(-1,DoF)
-        d_error = d_error.reshape(-1,1)
-        pred_grad = pred_grad.reshape(-1,DoF)
-        pred_d = pred_d.reshape(-1,1)
-        gt_d = gt_d.reshape(-1,1)
-        # 按照gt_d的大小排序
-        sorted_idx = torch.argsort(gt_d,dim=0)
-        q_sampled = q_sampled[sorted_idx]
-        d_error = d_error[sorted_idx]
-        pred_grad = pred_grad[sorted_idx]
-        pred_grad_norm = torch.norm(pred_grad,dim=2,keepdim=True)
-        pred_d = pred_d[sorted_idx]
-        gt_d = gt_d[sorted_idx]
-        print(f'q_sampled:{q_sampled.shape}, d_error:{d_error.shape}, pred_grad:{pred_grad.shape}, pred_d:{pred_d.shape}, gt_d:{gt_d.shape}, pred_grad_norm:{pred_grad_norm.shape}')
-        # 取前100个点，画出pred_d, gt_d, pred_grad, d_error的散点图，
-        # 并保存到当前目录下的pred_gt_distance_gradient_scatter.png
-        import matplotlib.pyplot as plt
-        # import seaborn as sns
-        # sns.set(style="whitegrid")
-        plot_range = 1000
-        plt.figure(figsize=(12, 8))
-        plt.subplot(2, 2, 1)
-        plt.scatter(gt_d[:plot_range].cpu().detach().numpy(), pred_d[:plot_range].cpu().detach().numpy(), c='blue', label='Predicted')
-        plt.scatter(gt_d[:plot_range].cpu().detach().numpy(), gt_d[:plot_range].cpu().detach().numpy(), c='yellow', label='Ground Truth')
-        plt.xlabel('Ground Truth Distance')
-        plt.ylabel('Predicted Distance')
-        plt.title('Predicted vs Ground Truth Distance')
-        plt.legend()
-        plt.subplot(2, 2, 2)
-        plt.scatter(gt_d[:plot_range].cpu().detach().numpy(), pred_grad_norm[:plot_range].cpu().detach().numpy(), c='red', label='Predicted Gradient')
-        plt.xlabel('Ground Truth Distance')
-        plt.ylabel('Predicted Gradient')
-        plt.title('Predicted Gradient')
-        plt.legend()
-        plt.subplot(2, 2, 3)
-        plt.scatter(gt_d[:plot_range].cpu().detach().numpy(), d_error[:plot_range].cpu().detach().numpy(), c='green', label='Ground Truth vs Error')
-        plt.xlabel('Ground Truth Distance')
-        plt.ylabel('Distance Error')
-        plt.title('Ground Truth vs Distance Error')
-        plt.legend()
-        plt.subplot(2, 2, 4)
-        # ground truth distance 的直方图
-        plt.hist(gt_d[:].squeeze(-1).cpu().detach().numpy(), bins=50, alpha=0.5, label='Ground Truth Distance', color='blue')
-        # predicted distance 的直方图
-        plt.hist(pred_d[:].squeeze(-1).cpu().detach().numpy(), bins=50, alpha=0.5, label='Predicted Distance', color='red')
-        plt.xlabel('Distance')
-        plt.ylabel('Frequency')
-        plt.title('Distance Histogram')
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(os.path.join(CUR_PATH,f'my_eval_{cube_pos[0]}_{cube_pos[1]}_{cube_pos[2]}_{cube_edge}.png'))
-        plt.show()
-        # 计算MAE和RMSE
-        pred_d = pred_d.squeeze(-1).reshape(-1).cpu().detach().numpy()
-        gt_d = gt_d.reshape(-1).cpu().detach().numpy()
-        pred_grad = pred_grad.reshape(-1,DoF).cpu().detach().numpy()
-        MAE_d = np.mean(np.abs(pred_d - gt_d))
-        RMSE_d = np.sqrt(np.mean((pred_d - gt_d)**2))
-        print(f'MAE_d: {MAE_d}, RMSE_d: {RMSE_d}')
+        cube_poses = [[0,0,0],[0,0,10],[0,10,10],[5,10,10],[10,10,10],[10,10,0]]
+        # cube_poses=[[10,10,0]]
+        for cube_pos in cube_poses:
+        
+            cube_edge = 0 # cube的边长
+            print(f'data_x_shape:{self.data["x"].shape}')
+            cube_points  = torch.stack([self.data['x'][20*20*x+20*y+z] \
+                                                        for x in [cube_pos[0],cube_pos[0]+cube_edge] \
+                                                        for y in [cube_pos[1],cube_pos[1]+cube_edge]\
+                                                        for z in [cube_pos[2],cube_pos[2]+cube_edge]]).float().to(device)
+            cube_ground_truth_q  = torch.stack([self.data['q'][20*20*x+20*y+z] \
+                                                        for x in [cube_pos[0],cube_pos[0]+cube_edge] \
+                                                        for y in [cube_pos[1],cube_pos[1]+cube_edge]\
+                                                        for z in [cube_pos[2],cube_pos[2]+cube_edge]]).float().to(device)
+            print(f'cube_points:{cube_ground_truth_q.shape}')
+            DoF = 7
+            panda = PandaLayer(self.device)
+            bp_sdf = self.bp_sdf
+            bdf_model = torch.load(self.bp_sdf_model_path)
+            q_max = panda.theta_max
+            q_min = panda.theta_min
+            # device
+            self.device = device
+            # 在DoF维度上采样test_sample_num个点
+            test_sample_num = 1000
+            q_sampled = q_min + torch.rand(test_sample_num,DoF).to(self.device)*(q_max-q_min)
+            
+            q_sampled.requires_grad = True
+            # 获得模型预测的距离和梯度
+            pred_d, pred_grad = self.inference_d_wrt_q(cube_points,q_sampled,model,return_grad = True)
+            # 计算ground truth的距离和梯度
+            from data_generator import DataGenerator
+            data_generator = DataGenerator(self.device)
+            gt_d = data_generator.distance_q(cube_points,q_sampled)
+            # print(f'pred_d:{pred_d.shape}, gt_d:{gt_d.shape}')
+            d_error = pred_d - gt_d
+            # 把q_sampled, d_error, pred_grad, pred_d, gt_d reshape成(batch_size, DoF), 
+            # 叠在一起，然后按照d_error的大小排序
+            q_sampled = q_sampled.reshape(-1,DoF)
+            d_error = d_error.reshape(-1,1)
+            print(f'pred_grad:{pred_grad.shape}, pred_d:{pred_d.shape}, gt_d:{gt_d.shape}')
+            pred_grad = pred_grad.reshape(-1,DoF)
+            pred_d = pred_d.reshape(-1,1)
+            gt_d = gt_d.reshape(-1,1)
+            # 按照gt_d的大小排序
+            sorted_idx = torch.argsort(gt_d,dim=0)
+            sorted_idx = torch.linspace(0,gt_d.shape[0]-1,gt_d.shape[0],dtype=torch.long).to(self.device)
+            q_sampled = q_sampled[sorted_idx]
+            d_error = d_error[sorted_idx]
+            pred_grad = pred_grad[sorted_idx]
+            pred_grad_norm = torch.norm(pred_grad,dim=-1,keepdim=True)
+            pred_d = pred_d[sorted_idx]
+            gt_d = gt_d[sorted_idx]
+            print(f'q_sampled:{q_sampled.shape}, d_error:{d_error.shape}, pred_grad:{pred_grad.shape}, pred_d:{pred_d.shape}, gt_d:{gt_d.shape}, pred_grad_norm:{pred_grad_norm.shape}')
+            # 取前100个点，画出pred_d, gt_d, pred_grad, d_error的散点图，
+            # 并保存到当前目录下的pred_gt_distance_gradient_scatter.png
+            import matplotlib.pyplot as plt
+            # import seaborn as sns
+            # sns.set(style="whitegrid")
+            plot_range = 1000
+            plt.figure(figsize=(12, 8))
+            plt.subplot(2, 2, 1)
+            plt.scatter(gt_d[:plot_range].cpu().detach().numpy(), pred_d[:plot_range].cpu().detach().numpy(), c='blue', label='Predicted')
+            plt.scatter(gt_d[:plot_range].cpu().detach().numpy(), gt_d[:plot_range].cpu().detach().numpy(), c='yellow', label='Ground Truth')
+            plt.xlabel('Ground Truth Distance')
+            plt.ylabel('Predicted Distance')
+            plt.title('Predicted vs Ground Truth Distance')
+            plt.legend()
+            plt.subplot(2, 2, 2)
+            plt.scatter(gt_d[:plot_range].cpu().detach().numpy(), pred_grad_norm[:plot_range].cpu().detach().numpy(), c='red', label='Predicted Gradient')
+            plt.xlabel('Ground Truth Distance')
+            plt.ylabel('Predicted Gradient')
+            plt.title('Predicted Gradient')
+            plt.legend()
+            plt.subplot(2, 2, 3)
+            plt.scatter(gt_d[:plot_range].cpu().detach().numpy(), d_error[:plot_range].cpu().detach().numpy(), c='green', label='Ground Truth vs Error')
+            plt.xlabel('Ground Truth Distance')
+            plt.ylabel('Distance Error')
+            plt.title('Ground Truth vs Distance Error')
+            plt.legend()
+            plt.subplot(2, 2, 4)
+            # ground truth distance 的直方图
+            plt.hist(gt_d[:].squeeze(-1).cpu().detach().numpy(), bins=50, alpha=0.5, label='Ground Truth Distance', color='blue')
+            # predicted distance 的直方图
+            plt.hist(pred_d[:].squeeze(-1).cpu().detach().numpy(), bins=50, alpha=0.5, label='Predicted Distance', color='red')
+            plt.xlabel('Distance')
+            plt.ylabel('Frequency')
+            plt.title('Distance Histogram')
+            plt.legend()
+            plt.tight_layout()
+            plt.savefig(os.path.join(CUR_PATH,f'my_eval_{cube_pos[0]}_{cube_pos[1]}_{cube_pos[2]}_{cube_edge}.png'))
+            plt.show()
+            # 计算MAE和RMSE
+            pred_d = pred_d.squeeze(-1).reshape(-1).cpu().detach().numpy()
+            gt_d = gt_d.reshape(-1).cpu().detach().numpy()
+            pred_grad = pred_grad.reshape(-1,DoF).cpu().detach().numpy()
+            MAE_d = np.mean(np.abs(pred_d - gt_d))
+            RMSE_d = np.sqrt(np.mean((pred_d - gt_d)**2))
+            print(f'MAE_d: {MAE_d}, RMSE_d: {RMSE_d}')
+    def my_eval_2(self,model):
+        # model
+        # input: [x,q] (B,3+7)
+        # 在data中取出8个构成cube的点
+        cube_poses = [[0,0,0],[0,0,10],[0,10,10],[5,10,10],[10,10,10],[10,10,0]]
+        # cube_poses=[[10,10,0]]
+        for cube_pos in cube_poses:
+        
+            cube_edge = 0 # cube的边长
+            print(f'data_x_shape:{self.data["x"].shape}')
+            cube_points  = torch.stack([self.data['x'][20*20*x+20*y+z] \
+                                                        for x in [cube_pos[0],cube_pos[0]+cube_edge] \
+                                                        for y in [cube_pos[1],cube_pos[1]+cube_edge]\
+                                                        for z in [cube_pos[2],cube_pos[2]+cube_edge]]).float().to(device)
+            cube_ground_truth_q  = torch.stack([self.data['q'][20*20*x+20*y+z] \
+                                                        for x in [cube_pos[0],cube_pos[0]+cube_edge] \
+                                                        for y in [cube_pos[1],cube_pos[1]+cube_edge]\
+                                                        for z in [cube_pos[2],cube_pos[2]+cube_edge]]).float().to(device)
+            print(f'cube_points:{cube_ground_truth_q.shape}')
+            DoF = 7
+            panda = PandaLayer(self.device)
+            bp_sdf = self.bp_sdf
+            bdf_model = torch.load(self.bp_sdf_model_path)
+            q_max = panda.theta_max
+            q_min = panda.theta_min
+            # device
+            self.device = device
+            # 在DoF维度上采样test_sample_num个点
+            test_sample_num = 1000
+            q_sampled = torch.rand(DoF).to(self.device).unsqueeze(0).expand(test_sample_num,-1) * (q_max-q_min) + q_min
+            eval_joint_idx = torch.randint(5,DoF,(1,)).to(self.device)
+            print(f'eval_joint_idx:{eval_joint_idx.shape}')
+            print(f'q:{q_sampled[0]}')
+            q_sampled[:,eval_joint_idx] = torch.linspace(\
+            q_min[eval_joint_idx].item(), q_max[eval_joint_idx].item(), test_sample_num).to(self.device).unsqueeze(-1)
+            q_sampled.requires_grad = True
+            # 获得模型预测的距离和梯度
+            pred_d, pred_grad = self.inference_d_wrt_q(cube_points,q_sampled,model,return_grad = True)
+            # 计算ground truth的距离和梯度
+            from data_generator import DataGenerator
+            data_generator = DataGenerator(self.device)
+            gt_d = data_generator.distance_q(cube_points,q_sampled)
+            # print(f'pred_d:{pred_d.shape}, gt_d:{gt_d.shape}')
+            d_error = pred_d - gt_d
+            # 把q_sampled, d_error, pred_grad, pred_d, gt_d reshape成(batch_size, DoF), 
+            # 叠在一起，然后按照d_error的大小排序
+            q_sampled = q_sampled.reshape(-1,DoF)
+            d_error = d_error.reshape(-1,1)
+            # print(f'pred_grad:{pred_grad.shape}, pred_d:{pred_d.shape}, gt_d:{gt_d.shape}')
+            pred_grad = pred_grad.reshape(-1,DoF)
+            pred_d = pred_d.reshape(-1,1)
+            gt_d = gt_d.reshape(-1,1)
+            
+            sorted_idx = torch.linspace(0,gt_d.shape[0]-1,gt_d.shape[0],dtype=torch.long).to(self.device)
+            q_sampled = q_sampled[sorted_idx]
+            d_error = d_error[sorted_idx]
+            pred_grad = pred_grad[sorted_idx]
+            pred_grad_norm = torch.norm(pred_grad,dim=-1,keepdim=True)
+            pred_d = pred_d[sorted_idx]
+            gt_d = gt_d[sorted_idx]
+            configuration = sorted_idx * q_min[eval_joint_idx] + (1 - sorted_idx) * q_max[eval_joint_idx]
+            configuration = configuration.cpu().detach().numpy()
+            import matplotlib.pyplot as plt
+            # import seaborn as sns
+            # sns.set(style="whitegrid")
+            plot_range = 1000
+            plt.figure(figsize=(12, 8))
+            plt.subplot(2, 2, 1)
+            plt.scatter(configuration, pred_d[:plot_range].cpu().detach().numpy(), c='blue', label='Predicted')
+            plt.scatter(configuration, gt_d[:plot_range].cpu().detach().numpy(), c='yellow', label='Ground Truth')
+            plt.xlabel('configuration')
+            plt.ylabel('Predicted Distance')
+            # y轴范围从0开始
+            plt.ylim(bottom=0)
+            plt.title('Predicted vs Ground Truth Distance 1')
+            plt.legend()
+            plt.subplot(2, 2, 2)
+            plt.scatter(configuration, pred_d[:plot_range].cpu().detach().numpy(), c='blue', label='Predicted')
+            plt.scatter(configuration, gt_d[:plot_range].cpu().detach().numpy(), c='yellow', label='Ground Truth')
+            plt.xlabel('configuration')
+            plt.ylabel('Predicted Distance')
+            plt.title('Predicted vs Ground Truth Distance 2')
+            plt.legend()
+            plt.subplot(2, 2, 3)
+            plt.scatter(configuration, d_error[:plot_range].cpu().detach().numpy(), c='green', label='Ground Truth vs Error')
+            plt.xlabel('configuration')
+            plt.ylabel('Distance Error')
+            plt.title('Ground Truth vs Distance Error')
+            plt.legend()
+            plt.tight_layout()
+            # 在图上添加文字
+            text = f'Joint {eval_joint_idx.item()} Evaluation'+\
+                f'\nCube Position: {cube_pos}\nCube Edge: {cube_edge}\n' + \
+                    f"q Sampled: {q_sampled[0].cpu().detach().numpy()}"
+            plt.text(0.4, 0.95, text, horizontalalignment='left', verticalalignment='center', transform=plt.gca().transAxes, fontsize=10)
+            plt.savefig(os.path.join(CUR_PATH,f'slice_{cube_pos[0]}_{cube_pos[1]}_{cube_pos[2]}_{cube_edge}.png'))
+            # plt.show()
+            # 计算MAE和RMSE
+            pred_d = pred_d.squeeze(-1).reshape(-1).cpu().detach().numpy()
+            gt_d = gt_d.reshape(-1).cpu().detach().numpy()
+            pred_grad = pred_grad.reshape(-1,DoF).cpu().detach().numpy()
+            MAE_d = np.mean(np.abs(pred_d - gt_d))
+            RMSE_d = np.sqrt(np.mean((pred_d - gt_d)**2))
+            print(f'MAE_d: {MAE_d}, RMSE_d: {RMSE_d}')            
+            
+            
 
 if __name__ == "__main__":
-    from torch.utils.tensorboard import SummaryWriter
-    import os
-    import time
-    i = 0
-    while os.path.exists(os.path.join(CUR_PATH,'runs/panda_cdf_'+str(i))):
-        i += 1
-    writer = SummaryWriter(os.path.join(CUR_PATH,'runs/panda_cdf_'+str(i)))
-    print(f'writer path: {os.path.join(CUR_PATH,"runs/panda_cdf_"+str(i))}')
-    # CUR_PATH = os.path.dirname(os.path.abspath(__file__))
-    writer.add_text('info', 'This is a test for Panda CDF model training and evaluation.')
+    parser = argparse.ArgumentParser(description='Panda CDF Model Training and Evaluation')
+    parser.add_argument('--data_path', type=str, default='data_again.pt', help='Path to the data file')
+    parser.add_argument('--with_writer', action='store_true', help='Whether to use TensorBoard writer')
+    parser.add_argument('--eval', action='store_true', help='Whether to evaluate the model')
+    parser.add_argument('--train', action='store_true', help='Whether to train the model')
+    parser.add_argument('--epoches', type=int, default=50000, help='Number of training epochs')
+    parser.add_argument('--batch_x', type=int, default=10, help='Batch size for x')
+    parser.add_argument('--batch_q', type=int, default=100, help='Batch size for q')
+    parser.add_argument('--signed_distance', action='store_true', help='Whether to use signed distance')
+    parser.add_argument('--max_q_per_link', type=int, default=100, help='Maximum number of q samples per link')
+    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use for training/evaluation')
+    parser.add_argument('--model_dict', type=str, default='model_dict_signed.pt', help='Path to save/load the model dictionary')
+    args = parser.parse_args()
+    print(f'args:{args}')
+    c = input()
+    # with_writer = True
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     hprams = {
-        'batch_x': 10,
-        'batch_q': 100,
+        'batch_x': args.batch_x,
+        'batch_q': args.batch_q,
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-        'signed_distance': False,
-        'max_q_per_link': 100,
-        'epoches': 50000,
+        'signed_distance': args.signed_distance,
+        'max_q_per_link': args.max_q_per_link,
+        'epoches': args.epoches,
         'optimizer': 'Adam',
         'learning_rate': 0.001,
         'scheduler': 'ReduceLROnPlateau',
@@ -635,15 +756,32 @@ if __name__ == "__main__":
         'tension_loss': 0.01,
         'gradient_loss': 0.1
     }
-    writer.add_hparams(hparam_dict=hprams, metric_dict={})
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # device = torch.device("cpu")
-    cdf = CDF(device,writer=writer)
+    if args.with_writer:
+        from torch.utils.tensorboard import SummaryWriter
+        import os
+        import time
+        i = 0
+        while os.path.exists(os.path.join(CUR_PATH,'runs/panda_cdf_'+str(i))):
+            i += 1
+        writer = SummaryWriter(os.path.join(CUR_PATH,'runs/panda_cdf_'+str(i)))
+        print(f'writer path: {os.path.join(CUR_PATH,"runs/panda_cdf_"+str(i))}')
+        # CUR_PATH = os.path.dirname(os.path.abspath(__file__))
+        writer.add_text('info', 'This is a test for Panda CDF model training and evaluation.')
+        writer.add_hparams(hparam_dict=hprams, metric_dict={})
+        # device = torch.device("cpu")
+        cdf = CDF(device,args.data_path,args.model_dict,writer=writer,signed_distance=args.signed_distance)
+    else:
+        cdf = CDF(device,args.data_path,args.model_dict,writer=None,signed_distance=args.signed_distance)
     # cdf.check_data()
-    cdf.train_nn(epoches=50000)
+    if args.train:
+        # cdf.train_nn(epoches=50000)
+        cdf.train_nn(epoches=hprams['epoches'])
+    # cdf.train_nn(epoches=50000)
     # cdf.eval_model(model=None,joint_idx=6,q_probe=torch.tensor([0.0,0.0,0.0,0.0,0.0,0.0,0.0]).to(device))
-    # model = MLPRegression(input_dims=10, output_dims=1, mlp_layers=[1024, 512, 256, 128, 128],skips=[], act_fn=torch.nn.ReLU, nerf=True)
-    # model.load_state_dict(torch.load(os.path.join(CUR_PATH,'model_dict.pt'))[1180])
-    # # model.load_state_dict(torch.load(os.path.join(CUR_PATH,'my_model_dict.pt'))[49900])
-    # model.to(device)
-    # cdf.eval_nn(model)
+    if args.eval:
+        model = MLPRegression(input_dims=10, output_dims=1, mlp_layers=[1024, 512, 256, 128, 128],skips=[], act_fn=torch.nn.ReLU, nerf=True)
+        model.load_state_dict(torch.load(os.path.join(CUR_PATH,'model_dict_signed.pt'))[49900])
+        # # model.load_state_dict(torch.load(os.path.join(CUR_PATH,'my_model_dict.pt'))[49900])
+        model.to(device)
+        # cdf.eval_nn(model,num_iter=100)
+        cdf.my_eval_2(model)

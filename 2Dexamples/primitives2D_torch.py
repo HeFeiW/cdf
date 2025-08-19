@@ -221,7 +221,29 @@ class Difference:
 
     def create_patch(self):
         pass
+class ABS_DIFFERENCE:
+    def __init__(self, a, *bs, k=None):
+        self.a = a
+        self.bs = bs
+        self.k = k
 
+    def signed_distance(self,p):
+        def f(p):
+            d1 = self.a.signed_distance(p)
+            for i,b in enumerate(self.bs):
+                d2 = b.signed_distance(p)
+                K = self.k[i]
+                if K is None:
+                    d1 = torch.abs(d1 - d2)
+                else:
+                    h = torch.clamp(0.5 - 0.5 * (d2 - d1) / K, 0, 1)
+                    m = d2 + (d1 - d2) * h
+                    d1 = m + K * h * (1 - h)
+            return d1
+        return f(p)
+
+    def create_patch(self):
+        pass
 class Intersection:
     def __init__(self, a, *bs, k=None):
         self.a = a
@@ -305,6 +327,44 @@ class Shell:
             return torch.abs(self.shape.signed_distance(p)) - self.thickness / 2
         return f(p)
 
+def plot_sdf_contour(sdf, xlim=(0, 1), ylim=(0, 1), delta=0.01, level_step=0.1, contour_color='black', cmap='RdBu'):
+    """
+    绘制SDF的等高线，并用不同颜色填充内外区域
+    :param sdf: SDF对象，需有signed_distance方法
+    :param xlim: x轴范围
+    :param ylim: y轴范围
+    :param delta: 网格步长
+    :param level_step: 等高线间隔
+    :param contour_color: 等高线颜色
+    :param cmap: 填充用的colormap
+    """
+    x = np.arange(xlim[0], xlim[1], delta)
+    y = np.arange(ylim[0], ylim[1], delta)
+    X, Y = np.meshgrid(x, y)
+    m, n = X.shape
+    X_tensor = torch.from_numpy(X)
+    Y_tensor = torch.from_numpy(Y)
+    P = torch.cat([X_tensor.unsqueeze(-1), Y_tensor.unsqueeze(-1)], dim=-1).view(-1, 2).float()
+    D = sdf.signed_distance(P).view(m, n).detach().cpu().numpy()
+    # plt不显示（无头模式）
+    plt.ioff()
+    
+    fig, ax = plt.subplots()
+    levels = np.arange(-np.max(np.abs(D)), np.max(np.abs(D)) + level_step, level_step)
+    CS = ax.contourf(X, Y, D, levels=levels, cmap=plt.get_cmap('RdBu'))
+    fig.colorbar(CS, ax=ax, orientation='vertical', label='Signed Distance Function Value')
+    # 绘制等高线
+    CS = ax.contour(X, Y, D, levels=levels, colors=contour_color)
+    ax.clabel(CS, inline=False, fontsize=10)
+    ax.set_title('SDF Contour Plot')
+    ax.set_xlabel('X-axis')
+    ax.set_ylabel('Y-axis')
+    ax.set_xlim(xlim)
+    ax.set_ylim(ylim)
+    plt.savefig('sdf_contour_plot_abs_diff.png', dpi=300)
+# 使用方法示例
+# plot_sdf_contour(box, xlim=(0.5, 1), ylim=(0.5, 1), delta=0.01)
+
 if __name__ == "__main__":
 
     # obj = Circle(center=[0,0],radius=[1])
@@ -315,25 +375,30 @@ if __name__ == "__main__":
     # print(obj.signed_distance(p).shape)
     # print(obj.normal(p).shape)
 
-    box = Box(center=[0.6,0.5],w=0.1,h=0.2)
+    box = Box(center=torch.tensor([0.6,0.5]),w=0.1,h=0.4)
     print(box.signed_distance(torch.tensor([0.6,0.6])))
+    box2 = Box(center=torch.tensor([0.4,0.5]),w=0.1,h=0.4)
+    operator = ABS_DIFFERENCE(box,box2,k=[0.05])
     # box = Erode(box,0.05)
     # circle = Circle(center=[0.36,0.3],radius=0.2)
     # operator = Union(box,circle,k=[0.05])
 
     delta = 0.01
-    x = np.arange(0.5, 1, delta)
-    y = np.arange(0.5, 1, delta)
-    X, Y = np.meshgrid(x, y)
-    m, n =  X.shape
+    # x = np.arange(0.5, 1, delta)
+    # y = np.arange(0.5, 1, delta)
+    # X, Y = np.meshgrid(x, y)
+    # m, n =  X.shape
 
-    X_tensor = torch.from_numpy(X)
-    Y_tensor = torch.from_numpy(Y)
-    P = torch.cat([X_tensor.unsqueeze(-1),Y_tensor.unsqueeze(-1)],dim=-1).view(-1,2)
-    D = box.signed_distance(P).view(m,n).numpy()
-    print(D)
-    fig, ax = plt.subplots()
-    CS = ax.contour(X, Y, D,levels = [0])
-    ax.clabel(CS, inline=False, fontsize=10)
-    ax.set_title('Simplest default with labels')
-    plt.show()
+    # X_tensor = torch.from_numpy(X)
+    # Y_tensor = torch.from_numpy(Y)
+    # P = torch.cat([X_tensor.unsqueeze(-1),Y_tensor.unsqueeze(-1)],dim=-1).view(-1,2)
+    # D = box.signed_distance(P).view(m,n).numpy()
+    # print(D)
+    # fig, ax = plt.subplots()
+    # CS = ax.contour(X, Y, D,levels = [0])
+    # ax.clabel(CS, inline=False, fontsize=10)
+    # ax.set_title('Simplest default with labels')
+    # plt.show()
+    # plot_sdf_contour(box, xlim=(0.0, 1), ylim=(0.0, 1), delta=delta, level_step=0.1, contour_color='black', cmap='RdBu')
+    # plot_sdf_contour(circle, xlim=(0.0, 1), ylim=(0.0, 1), delta=delta, level_step=0.1, contour_color='black', cmap='RdBu')
+    plot_sdf_contour(operator, xlim=(0.0, 1), ylim=(0.0, 1), delta=delta, level_step=0.02, contour_color='black', cmap='RdBu')

@@ -25,8 +25,9 @@ class DataGenerator():
     def __init__(self,device):
         # panda model
         self.panda = PandaLayer(device)
-        self.bp_sdf = BPSDF(8,-1.0,1.0,self.panda,device)
-        self.model = torch.load(os.path.join(CUR_DIR,'../../RDF/models/BP_8.pt'))
+        self.bp_sdf_model_path = os.path.join(CUR_DIR,'../../RDF/models/panda/BP_8.pt')
+        self.bp_sdf = BPSDF(8,-1.0,1.0,self.panda,self.bp_sdf_model_path,device)
+        self.model = torch.load(self.bp_sdf_model_path)
         self.q_max = self.panda.theta_max
         self.q_min = self.panda.theta_min
         # device
@@ -124,7 +125,10 @@ class DataGenerator():
             for i in range(link_idx.min(),link_idx.max()+1):
                 mask = (link_idx==i)
                 d_norm = torch.norm(q[:,:i].unsqueeze(1)- q_template[mask][:,:i].unsqueeze(0),dim=-1)
-                d[:,i-1] = torch.min(d_norm,dim=-1)[0]
+                if d_norm.shape[1] == 0:
+                    d[:,i-1] = torch.inf
+                else:
+                    d[:,i-1] = torch.min(d_norm,dim=-1)[0]
         d = torch.min(d,dim=-1)[0]
 
         # compute sign of d

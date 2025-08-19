@@ -18,6 +18,7 @@ CUR_PATH = os.path.dirname(os.path.realpath(__file__))
 from mlp import MLPRegression
 from nn_cdf import CDF
 
+
 def main_loop():
     loop_num = 2
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -54,45 +55,57 @@ def main_loop():
     p.setTimeStep(delta_t)
     p.setRealTimeSimulation(0)
 
-    # ----------- load box -----------
-    box_size = np.array([0.6,0.01,0.3])
-    box_center = np.array([0.0,0.3,0.3])
-    box = p.createVisualShape(p.GEOM_BOX, halfExtents=box_size, rgbaColor=[0.8500, 0.3250, 0.0980, 1.0])
-    p.createMultiBody(baseVisualShapeIndex=box,
-                                        basePosition=box_center)
-
     # ------------- load a object to push -----------
-    obj_size = np.array([0.1, 0.1, 0.1])
+    obj_size = np.array([0.05, 0.05, 0.05]) # 正好是一个grid的大小
     obj_center = np.array([0.0, 0.0, 0.5])
-    obj = p.createVisualShape(p.GEOM_BOX, halfExtents=obj_size, rgbaColor=[0.8500, 0.3250, 0.0980, 1.0])
+    obj = p.createVisualShape(p.GEOM_BOX, halfExtents=obj_size/2, rgbaColor=[0.8500, 0.3250, 0.0980, 1.0])
     p.createMultiBody(baseVisualShapeIndex=obj,
                                         basePosition=obj_center)
     
     # --- initialize the task space  ---
+    # #TODO 初始的位置和目标位置先定死，保证是一条简单的直线，之后再改成随机的
     task_space = np.array([-0.5, 0.5], # x-axis
                           [-0.5, 0.5], # y-axis
                           [ 0.0, 1.0]) # z-axis
     base_pos = np.array([0.0, 0.0, 0.0])
+     # --- initialize the start and goal position of the object(both 2D on the ground) ---
+    # obj_start_pos = np.random.rand(2) * (task_space[:2, 1] - task_space[:2, 0]) + task_space[:2, 0]
+    obj_start_pos = np.array([-0.2, 0.2])
+    obj_start_pos = np.append(obj_start_pos, obj_size[2] / 2.0)  # z-axis is half of the object height
+    # obj_goal_pos = np.random.rand(2) * (task_space[:2, 1] - task_space[:2, 0]) + task_space[:2, 0]
+    obj_goal_pos = np.array([0.2, -0.2])
+    obj_goal_pos = np.append(obj_goal_pos, obj_size[2] / 2.0)  # z-axis is half of the object height
+    # obj_start_orientation_Euler = (np.random.rand(1) * np.pi * 2.0 - np.pi,0.0, 0.0)  # only rotate around z-axis
+    obj_start_orientation_Euler = (0.0, 0.0, 0.0)
+    obj_start_orientation = p.getQuaternionFromEuler(obj_start_orientation_Euler)
+    # obj_goal_orientation_Euler = (np.random.rand(1) * np.pi * 2.0 - np.pi,0.0, 0.0)
+    obj_goal_orientation_Euler = (0.0, 0.0, 0.0)
+    obj_goal_orientation = p.getQuaternionFromEuler(obj_goal_orientation_Euler)
+    
+    # --- 根据初始位置和目标位置，计算直线轨迹 ---
+    key_frame_num = 40
+    obj_traj_pos = np.linspace(obj_start_pos, obj_goal_pos, key_frame_num)
+    obj_traj_orientation = np.linspace(obj_start_orientation_Euler, obj_goal_orientation_Euler, key_frame_num)
     
     for _ in loop_num:
         for _ in range(300):
             robot.set_joint_positions(q0)
             p.stepSimulation()
         # ---- initialize the object position and orientation ----
-        obj_center = np.random.rand(3) * (task_space[:, 1] - task_space[:, 0]) + task_space[:, 0]
-        obj_center[2] = task_space[2, 0] + obj_size[2] / 2.0
-        obj_orientation_Euler = np.random.rand(3) * np.pi * 2.0 - np.pi
-        obj_orientation = p.getQuaternionFromEuler(obj_orientation_Euler)
-        p.resetBasePositionAndOrientation(obj, obj_center, obj_orientation)
+        p.resetBasePositionAndOrientation(obj, obj_start_pos, obj_start_orientation)
         p.resetBaseVelocity(obj, linearVelocity=[0, 0, 0], angularVelocity=[0, 0, 0])
         # ---- initialize a goal area for the object ----
         goal_area_size = np.array([0.2, 0.2, 0.2])
         goal_area_center = np.random.rand(2) * (task_space[:2, 1] - task_space[2:, 0]) + task_space[:2, 0]
         
         reached_goal,proj = False, False
-        while(True):
+        for frame in range(key_frame_num):
             print(robot.get_joint_positions())
             position, orientation = p.getBasePositionAndOrientation(obj)
+            frame_gt_pos = obj_traj_pos[frame]
+            frame_gt_orientation = p.getQuaternionFromEuler(obj_traj_orientation[frame])
+            print(f'frame: {frame}, object position: {position}, orientation: {orientation}')
+            print(f'frame: {frame}, gt position: {frame_gt_pos}, orientation: {frame_gt_orientation}')
             # check if the object is out of the task space
             if (position[0] < task_space[0, 0] or position[0] > task_space[0, 1] or
                 position[1] < task_space[1, 0] or position[1] > task_space[1, 1] or
@@ -107,7 +120,7 @@ def main_loop():
             else:
                 print('not reached goal')
                 q = q_init
-                x = torch.from_numpy(np.array([position])).to(device).float()
+                x = torch.from_numpy(np.array([frame_gt_pos])).to(device).float()
                 d,grad = cdf.inference_d_wrt_q(x,q,model)
                 print(f'q_init: {q_init}')
                 print(f'd: {d}, grad: {grad}')

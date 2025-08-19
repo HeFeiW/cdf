@@ -38,6 +38,8 @@ def main_loop():
     parser = argparse.ArgumentParser(description='Franka Panda CDF Example')
     parser.add_argument('--step_size', type=float, default=0.01, help='Step size for moving on the zero-level set')
     parser.add_argument('--display_mode', type=str, default='GUI', choices=['GUI', 'DIRECT'], help='Display mode: GUI or DIRECT')
+    parser.add_argument('--robot', type=str, default='panda', help='Robot name (default: panda)')
+    parser.add_argument('--model_dict', type=str, help='Path to the model dictionary')
     args = parser.parse_args()
     # 在zero-level-set上移动的step_size
     step_size = args.step_size
@@ -52,7 +54,7 @@ def main_loop():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # device = torch.device("cpu")
     # --------- load model and cdf -----------
-    cdf = CDF(device)
+    cdf = CDF(device,model_dict=args.model_dict,data_path="data_again.pt")
     model = MLPRegression(input_dims=10, output_dims=1, mlp_layers=[1024, 512, 256, 128, 128],skips=[], act_fn=torch.nn.ReLU, nerf=True)
     model.load_state_dict(torch.load(os.path.join(CUR_PATH,'model_dict.pt'))[49900])
     model.to(device)
@@ -79,7 +81,9 @@ def main_loop():
     robot = PandaSim(p, base_pos, base_rot)
     q0 = robot.get_joint_positions()
     q_init = torch.tensor([q0],requires_grad=True).to(device).float()
-    p.enableJointForceTorqueSensor(robot.panda, -1, enableSensor=True)
+    pandaNumDofs = p.getNumJoints(robot.panda)
+    for joint_idx in range(pandaNumDofs):
+        p.enableJointForceTorqueSensor(robot.panda, joint_idx, enableSensor=True)
     # NOTE: need high frequency
     hz = 1000
     delta_t = 1.0 / hz
@@ -123,16 +127,16 @@ def main_loop():
         p.resetBasePositionAndOrientation(obj, obj_center, obj_orientation)
         p.resetBaseVelocity(obj, linearVelocity=[0, 0, 0], angularVelocity=[0, 0, 0])
         print(f'obj center: {obj_center}, obj orientation: {obj_orientation}')
-        while(True):
-                keys = p.getKeyboardEvents()
-                if p.B3G_SPACE in keys and keys[p.B3G_SPACE] & p.KEY_WAS_TRIGGERED:
-                    print('space key pressed')
-                    break
+        # while(True):
+        #         keys = p.getKeyboardEvents()
+        #         if p.B3G_SPACE in keys and keys[p.B3G_SPACE] & p.KEY_WAS_TRIGGERED:
+        #             print('space key pressed')
+        #             break
 
         while(True):
-            print(f'joint positions:{robot.get_joint_positions()}')
+            # print(f'joint positions:{robot.get_joint_positions()}')
             torques = p.getJointStates(robot.panda, range(pandaNumDofs))
-            print(f'torques: {torques}')
+            # print(f'torques: {torques}')
             print(f'')
             position, orientation = p.getBasePositionAndOrientation(obj)
             # check if the object is out of the task space
@@ -145,22 +149,22 @@ def main_loop():
             if not in_contact:
                 print('not in contact')
                 q = q_init
-                print(f'q_init: {q_init}')
+                # print(f'q_init: {q_init}')
                 x = sample_points_from_box(obj, num_samples=100)
                 x = torch.from_numpy(np.array(x)).to(device).float()
                 d,grad = cdf.inference_d_wrt_q(x,q,model)
                 q_next = cdf.projection(q,d,grad)
                 q_init = q_next
-                print(f'd: {d}, grad: {grad}, q_next: {q_next}')
+                print(f'd: {d.cpu().detach().numpy()[0]}')
+                # print(f'grad: {grad}, q_next: {q_next}')
                 robot.set_joint_positions(q_next[0].data.cpu().numpy())
             else:
-                print('not reached goal')
+                print(f'in contact')
                 q = q_init
                 # 在obj表面上采样位置
-                x = sample_points_from_box(obj, num_samples=1)
+                x = sample_points_from_box(obj, num_samples=1000)
                 x = torch.from_numpy(np.array(x)).to(device).float()
                 d,grad = cdf.inference_d_wrt_q(x,q,model)
-                print(f'in contact, d: {d}, grad: {grad}')
                 # 找到与grad正交的方向
                 n_q = len(grad)
 
@@ -168,17 +172,17 @@ def main_loop():
                 q_normal = q_normal / torch.norm(q_normal, dim=-1, keepdim=True)
                 q_next = q - step_size * q_normal
                 q_init = q_next
-                while(True):
-                    keys = p.getKeyboardEvents()
-                    if p.B3G_SPACE in keys and keys[p.B3G_SPACE] & p.KEY_WAS_TRIGGERED:
-                        print('space key pressed')
-                        break
-                print(f'd: {d}, grad: {grad}, q_next: {q_next}, q_normal: {q_normal}')
+                # while(True):
+                #     keys = p.getKeyboardEvents()
+                #     if p.B3G_SPACE in keys and keys[p.B3G_SPACE] & p.KEY_WAS_TRIGGERED:
+                #         print('space key pressed')
+                #         break
+                time.sleep(0.1)
+                print(f'd: {d.cpu().detach().numpy()[0]}')
+                # print(f'q_next: {q_next}, q_normal: {q_normal}')
                 robot.set_joint_positions(q_next[0].data.cpu().numpy())
 
             # 等待用户按键space进入下一步
-            if display_mode == 'DIRECT':
-                continue
             p.stepSimulation()
             time.sleep(delta_t*2.0)
 
