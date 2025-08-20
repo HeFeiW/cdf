@@ -17,7 +17,7 @@ import argparse
 CUR_PATH = os.path.dirname(os.path.realpath(__file__))
 from mlp import MLPRegression
 sys.path.append(os.path.join(CUR_PATH,'../../RDF'))
-from panda_layer.panda_layer import PandaLayer
+from panda_layer.robot_layer import RobotLayer
 import bf_sdf
 
 PI = math.pi
@@ -26,7 +26,7 @@ np.random.seed(10)
 # torch.autograd.set_detect_anomaly(True)
 
 class CDF:
-    def __init__(self,device,data_path,model_dict,signed_distance=False,writer=None) -> None:
+    def __init__(self,device,paths,robot,signed_distance=False,writer=None) -> None:
         # device
         self.device = device  
         self.writer = writer
@@ -36,17 +36,17 @@ class CDF:
         # # # uncomment these lines to process the generated data and train your own CDF
         # self.raw_data = np.load(os.path.join(CUR_PATH,'data_again.npy'),allow_pickle=True).item()
         # self.process_data(self.raw_data)
-        self.data_path = os.path.join(CUR_PATH,data_path) 
+        self.data_path = paths['data']
         self.data = self.load_data(self.data_path)
         self.len_data = len(self.data['k'])
         self.signed_distance = signed_distance
         # panda robot
-        self.panda = PandaLayer(device)
-        
-        self.bp_sdf_model_path = os.path.join(CUR_PATH,'../../RDF/models/panda/BP_8.pt')
-        self.bp_sdf = bf_sdf.BPSDF(8,-1.0,1.0,self.panda,self.bp_sdf_model_path,device)
+        self.robot = RobotLayer(device=device,paths=paths,robot=robot)
+        self.paths = paths
+        self.bp_sdf_model_path = paths['model']
+        self.bp_sdf = bf_sdf.BPSDF(8,-1.0,1.0,self.robot,self.bp_sdf_model_path,device)
         self.bp_sdf_model = torch.load(self.bp_sdf_model_path)
-        self.model_dict = model_dict
+        self.model_dict = paths['model_dict']
 
     def process_data(self,data):
         # 从原始数据（data）中降采样（pytorch3d.ops.sample_farthest_points）每个关节的采样点,
@@ -207,7 +207,7 @@ class CDF:
     def sample_q(self,batch_q = None):
         if batch_q is None:
             batch_q = self.batch_q
-        q_sampled = self.panda.theta_min + torch.rand(batch_q,7).to(self.device)*(self.panda.theta_max-self.panda.theta_min)
+        q_sampled = self.robot.theta_min + torch.rand(batch_q,7).to(self.device)*(self.robot.theta_max-self.robot.theta_min)
         q_sampled.requires_grad = True
         return q_sampled
     
@@ -396,11 +396,11 @@ class CDF:
         for q0,q1 in zip(q_batch,q_proj[1]):
             scene = trimesh.Scene()
             scene.add_geometry(trimesh.PointCloud(x_batch.data.cpu().numpy(),colors=[255,0,0]))
-            robot_mesh0 = self.panda.get_forward_robot_mesh(pose, q0.unsqueeze(0))[0]
+            robot_mesh0 = self.robot.get_forward_robot_mesh(pose, q0.unsqueeze(0))[0]
             robot_mesh0 = np.sum(robot_mesh0)
             robot_mesh0.visual.face_colors = [0,255,0,100]
             scene.add_geometry(robot_mesh0)
-            robot_mesh1 = self.panda.get_forward_robot_mesh(pose, q1.unsqueeze(0))[0]
+            robot_mesh1 = self.robot.get_forward_robot_mesh(pose, q1.unsqueeze(0))[0]
             robot_mesh1 = np.sum(robot_mesh1)
             robot_mesh1.visual.face_colors = [0,0,255,100]
             scene.add_geometry(robot_mesh1)
@@ -533,11 +533,10 @@ class CDF:
                                                         for z in [cube_pos[2],cube_pos[2]+cube_edge]]).float().to(device)
             print(f'cube_points:{cube_ground_truth_q.shape}')
             DoF = 7
-            panda = PandaLayer(self.device)
             bp_sdf = self.bp_sdf
             bdf_model = torch.load(self.bp_sdf_model_path)
-            q_max = panda.theta_max
-            q_min = panda.theta_min
+            q_max = self.robot.theta_max
+            q_min = self.robot.theta_min
             # device
             self.device = device
             # 在DoF维度上采样test_sample_num个点
@@ -549,7 +548,7 @@ class CDF:
             pred_d, pred_grad = self.inference_d_wrt_q(cube_points,q_sampled,model,return_grad = True)
             # 计算ground truth的距离和梯度
             from data_generator import DataGenerator
-            data_generator = DataGenerator(self.device)
+            data_generator = DataGenerator(self.device,self.robot,self.paths)
             gt_d = data_generator.distance_q(cube_points,q_sampled)
             # print(f'pred_d:{pred_d.shape}, gt_d:{gt_d.shape}')
             d_error = pred_d - gt_d
@@ -620,6 +619,8 @@ class CDF:
         # model
         # input: [x,q] (B,3+7)
         # 在data中取出8个构成cube的点
+        from data_generator import DataGenerator
+        data_generator = DataGenerator(self.device,self.robot,self.paths)
         cube_poses = [[0,0,0],[0,0,10],[0,10,10],[5,10,10],[10,10,10],[10,10,0]]
         # cube_poses=[[10,10,0]]
         for cube_pos in cube_poses:
@@ -634,13 +635,13 @@ class CDF:
                                                         for x in [cube_pos[0],cube_pos[0]+cube_edge] \
                                                         for y in [cube_pos[1],cube_pos[1]+cube_edge]\
                                                         for z in [cube_pos[2],cube_pos[2]+cube_edge]]).float().to(device)
+            c=input()
             print(f'cube_points:{cube_ground_truth_q.shape}')
             DoF = 7
-            panda = PandaLayer(self.device)
             bp_sdf = self.bp_sdf
             bdf_model = torch.load(self.bp_sdf_model_path)
-            q_max = panda.theta_max
-            q_min = panda.theta_min
+            q_max = self.robot.theta_max
+            q_min = self.robot.theta_min
             # device
             self.device = device
             # 在DoF维度上采样test_sample_num个点
@@ -654,10 +655,10 @@ class CDF:
             q_sampled.requires_grad = True
             # 获得模型预测的距离和梯度
             pred_d, pred_grad = self.inference_d_wrt_q(cube_points,q_sampled,model,return_grad = True)
+            print(f'pred_d_min:{pred_d.min()}, pred_d_max:{pred_d.max()}, pred_d_mean:{pred_d.mean()}')
             # 计算ground truth的距离和梯度
-            from data_generator import DataGenerator
-            data_generator = DataGenerator(self.device)
             gt_d = data_generator.distance_q(cube_points,q_sampled)
+            print(f'gt_d.min:{gt_d.min()}, gt_d.max:{gt_d.max()},gt_d.mean:{gt_d.mean()}')
             # print(f'pred_d:{pred_d.shape}, gt_d:{gt_d.shape}')
             d_error = pred_d - gt_d
             # 把q_sampled, d_error, pred_grad, pred_d, gt_d reshape成(batch_size, DoF), 
@@ -736,6 +737,7 @@ if __name__ == "__main__":
     parser.add_argument('--max_q_per_link', type=int, default=100, help='Maximum number of q samples per link')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use for training/evaluation')
     parser.add_argument('--model_dict', type=str, default='model_dict_signed.pt', help='Path to save/load the model dictionary')
+    parser.add_argument('--robot', type=str, default='panda', help='Robot type (e.g., panda)',choices=['panda','dexhand','leaphand'])
     args = parser.parse_args()
     print(f'args:{args}')
     c = input()
@@ -756,6 +758,16 @@ if __name__ == "__main__":
         'tension_loss': 0.01,
         'gradient_loss': 0.1
     }
+    CUR_DIR = os.path.dirname(os.path.abspath(__file__))
+    paths = {
+        'urdf': os.path.join(CUR_DIR,f'../../RDF/descriptions/{args.robot}/*.urdf'),
+        'meshes': os.path.join(CUR_DIR,f'../../RDF/descriptions/{args.robot}/meshes/*.stl'),
+        'points': os.path.join(CUR_DIR,f'../../RDF/data/{args.robot}/sdf_points/'),
+        'model':os.path.join(CUR_DIR, f'../../RDF/models/{args.robot}/BP_8.pt'),
+        'data': os.path.join(CUR_DIR,f'data/{args.robot}/{args.data_path}'),
+        'model_dict': os.path.join(CUR_DIR,f'model_dict/{args.robot}/{args.model_dict}'),
+    }
+    # robot = RobotLayer(paths=paths, device=device, robot=args.robot)
     if args.with_writer:
         from torch.utils.tensorboard import SummaryWriter
         import os
@@ -769,9 +781,9 @@ if __name__ == "__main__":
         writer.add_text('info', 'This is a test for Panda CDF model training and evaluation.')
         writer.add_hparams(hparam_dict=hprams, metric_dict={})
         # device = torch.device("cpu")
-        cdf = CDF(device,args.data_path,args.model_dict,writer=writer,signed_distance=args.signed_distance)
+        cdf = CDF(device,paths=paths,robot=args.robot,writer=writer,signed_distance=args.signed_distance)
     else:
-        cdf = CDF(device,args.data_path,args.model_dict,writer=None,signed_distance=args.signed_distance)
+        cdf = CDF(device,paths=paths,robot=args.robot,writer=None,signed_distance=args.signed_distance)
     # cdf.check_data()
     if args.train:
         # cdf.train_nn(epoches=50000)
@@ -780,7 +792,7 @@ if __name__ == "__main__":
     # cdf.eval_model(model=None,joint_idx=6,q_probe=torch.tensor([0.0,0.0,0.0,0.0,0.0,0.0,0.0]).to(device))
     if args.eval:
         model = MLPRegression(input_dims=10, output_dims=1, mlp_layers=[1024, 512, 256, 128, 128],skips=[], act_fn=torch.nn.ReLU, nerf=True)
-        model.load_state_dict(torch.load(os.path.join(CUR_PATH,'model_dict_signed.pt'))[49900])
+        model.load_state_dict(torch.load((paths['model_dict']))[49900])
         # # model.load_state_dict(torch.load(os.path.join(CUR_PATH,'my_model_dict.pt'))[49900])
         model.to(device)
         # cdf.eval_nn(model,num_iter=100)

@@ -12,7 +12,7 @@ CUR_DIR = os.path.dirname(os.path.realpath(__file__))
 import numpy as np
 import sys
 sys.path.append(os.path.join(CUR_DIR,'../../RDF'))
-from panda_layer.panda_layer import PandaLayer
+from panda_layer.robot_layer import RobotLayer
 from bf_sdf import BPSDF
 from torchmin import minimize
 import time
@@ -22,9 +22,9 @@ import copy
 PI = math.pi
 
 class DataGenerator():
-    def __init__(self,device):
+    def __init__(self,device,robot,paths):
         # panda model
-        self.panda = PandaLayer(device)
+        self.panda = RobotLayer(device=device,robot='panda',paths=paths)
         self.bp_sdf_model_path = os.path.join(CUR_DIR,'../../RDF/models/panda/BP_8.pt')
         self.bp_sdf = BPSDF(8,-1.0,1.0,self.panda,self.bp_sdf_model_path,device)
         self.model = torch.load(self.bp_sdf_model_path)
@@ -92,7 +92,6 @@ class DataGenerator():
         
         d,idx = self.compute_sdf(x,res.x,return_index=True)
         d,idx = d.squeeze(),idx.squeeze()
-
         mask = torch.abs(d) < epsilon
         # q_valid,d,idx = res.x[mask],d[mask],idx[mask]
         boundary_mask = ((res.x > self.q_min) & (res.x < self.q_max)).all(dim=1)
@@ -101,6 +100,11 @@ class DataGenerator():
         # q0 = q0[mask][boundary_mask]
 
         print('number of q_valid: \t{} \t time cost:{}'.format(len(final_q),time.time()-t0))
+        print(f'shape idx:{idx.shape},shape final_q:{final_q.shape},shape x, shape d:{x.shape},{d.shape}')
+        for i in range(len(x)):
+            print(f'point {x[i]}: q_cnts{len(final_q)}')
+            print(f'idx:{idx[i]}')
+        c = input()
         if return_mask:
             return final_mask,final_q,idx
         else:
@@ -114,11 +118,12 @@ class DataGenerator():
         # compute d
         Np = q.shape[0]
         q_template,link_idx = self.given_x_find_q(x)
-        print(q_template.shape)
+        # print('link index',link_idx)
 
-        if link_idx.min() == 0:
-            return torch.zeros(Np).to(self.device)
-        else:
+        # if link_idx.min() == 0:#TODO why?
+        #     return torch.zeros(Np).to(self.device)
+        # else:
+        if True:
             link_idx[link_idx==7] = 6
             link_idx[link_idx==8] = 7
             d = torch.inf*torch.ones(Np,7).to(self.device)
