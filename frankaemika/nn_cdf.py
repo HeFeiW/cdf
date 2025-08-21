@@ -626,7 +626,6 @@ class CDF:
         for cube_pos in cube_poses:
         
             cube_edge = 0 # cube的边长
-            print(f'data_x_shape:{self.data["x"].shape}')
             cube_points  = torch.stack([self.data['x'][20*20*x+20*y+z] \
                                                         for x in [cube_pos[0],cube_pos[0]+cube_edge] \
                                                         for y in [cube_pos[1],cube_pos[1]+cube_edge]\
@@ -635,21 +634,19 @@ class CDF:
                                                         for x in [cube_pos[0],cube_pos[0]+cube_edge] \
                                                         for y in [cube_pos[1],cube_pos[1]+cube_edge]\
                                                         for z in [cube_pos[2],cube_pos[2]+cube_edge]]).float().to(device)
-            c=input()
-            print(f'cube_points:{cube_ground_truth_q.shape}')
+            # cube_points:(N,3) (N=sample_num)
+            # cube_ground_truth_q:(N,100,DoF,DoF)
             DoF = 7
             bp_sdf = self.bp_sdf
             bdf_model = torch.load(self.bp_sdf_model_path)
             q_max = self.robot.theta_max
             q_min = self.robot.theta_min
-            # device
-            self.device = device
             # 在DoF维度上采样test_sample_num个点
             test_sample_num = 1000
             q_sampled = torch.rand(DoF).to(self.device).unsqueeze(0).expand(test_sample_num,-1) * (q_max-q_min) + q_min
-            eval_joint_idx = torch.randint(5,DoF,(1,)).to(self.device)
-            print(f'eval_joint_idx:{eval_joint_idx.shape}')
-            print(f'q:{q_sampled[0]}')
+            eval_joint_idx = torch.randint(5,DoF,(1,)).to(self.device) 
+            # 在5-6之间采样一个整数作为评估的关节（因为前面几个关节对末端影响较大，后面几个关节可能过于平滑）
+            print(f'eval_joint_idx:{eval_joint_idx}')
             q_sampled[:,eval_joint_idx] = torch.linspace(\
             q_min[eval_joint_idx].item(), q_max[eval_joint_idx].item(), test_sample_num).to(self.device).unsqueeze(-1)
             q_sampled.requires_grad = True
@@ -736,7 +733,7 @@ if __name__ == "__main__":
     parser.add_argument('--signed_distance', action='store_true', help='Whether to use signed distance')
     parser.add_argument('--max_q_per_link', type=int, default=100, help='Maximum number of q samples per link')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use for training/evaluation')
-    parser.add_argument('--model_dict', type=str, default='model_dict_signed.pt', help='Path to save/load the model dictionary')
+    parser.add_argument('--model_dict', type=str, default='model_dict_signed_2.pt', help='Path to save/load the model dictionary')
     parser.add_argument('--robot', type=str, default='panda', help='Robot type (e.g., panda)',choices=['panda','dexhand','leaphand'])
     args = parser.parse_args()
     print(f'args:{args}')

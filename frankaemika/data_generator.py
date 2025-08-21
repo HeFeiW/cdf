@@ -15,6 +15,7 @@ sys.path.append(os.path.join(CUR_DIR,'../../RDF'))
 from panda_layer.robot_layer import RobotLayer
 from bf_sdf import BPSDF
 from torchmin import minimize
+import argparse
 import time
 import math
 import copy
@@ -24,12 +25,13 @@ PI = math.pi
 class DataGenerator():
     def __init__(self,device,robot,paths):
         # panda model
-        self.panda = RobotLayer(device=device,robot='panda',paths=paths)
-        self.bp_sdf_model_path = os.path.join(CUR_DIR,'../../RDF/models/panda/BP_8.pt')
-        self.bp_sdf = BPSDF(8,-1.0,1.0,self.panda,self.bp_sdf_model_path,device)
+        self.robot = RobotLayer(device=device,robot=robot,paths=paths)
+        self.paths = paths
+        self.bp_sdf_model_path = paths['model']
+        self.bp_sdf = BPSDF(8,-1.0,1.0,self.robot,self.bp_sdf_model_path,device)
         self.model = torch.load(self.bp_sdf_model_path)
-        self.q_max = self.panda.theta_max
-        self.q_min = self.panda.theta_min
+        self.q_max = self.robot.theta_max
+        self.q_min = self.robot.theta_min
         # device
         self.device = device
 
@@ -37,7 +39,7 @@ class DataGenerator():
         # workspace大小：1m x 1m x 1m
         # 20 x 20 x 20 = 8000个点
         # 相当于每个grid是 5cm x 5cm x 5cm
-        self.workspace = [[-0.5,-0.5,0.0],[0.5,0.5,1.0]]
+        self.workspace = self.robot.space_limits.cpu().numpy()
         self.n_disrete = 20         # total number of x: n_discrete**3
         self.batchsize = 20000       # batch size of q
         # self.pose = torch.eye(4).unsqueeze(0).to(self.device).expand(self.batchsize,4,4).float()
@@ -57,6 +59,8 @@ class DataGenerator():
             return d
         else:
             d,_,idx = self.bp_sdf.get_whole_body_sdf_batch(x,pose, q,self.model,use_derivative =False,return_index = True)
+            # d: (Nq,Nx)
+            # idx: (Nq,Nx)
             d,pts_idx = d.min(dim=1)
             idx = idx[torch.arange(len(idx)),pts_idx]
             return d,idx
@@ -79,7 +83,7 @@ class DataGenerator():
         t0 = time.time()
         # optimizer for data generation
         if q is None:
-            q = torch.rand(batchsize,7).to(self.device)*(self.q_max-self.q_min)+self.q_min
+            q = torch.rand(batchsize,self.robot.dof).to(self.device)*(self.q_max-self.q_min)+self.q_min
         q0 = copy.deepcopy(q)
         res = minimize(
             cost_function, 
@@ -100,11 +104,7 @@ class DataGenerator():
         # q0 = q0[mask][boundary_mask]
 
         print('number of q_valid: \t{} \t time cost:{}'.format(len(final_q),time.time()-t0))
-        print(f'shape idx:{idx.shape},shape final_q:{final_q.shape},shape x, shape d:{x.shape},{d.shape}')
-        for i in range(len(x)):
-            print(f'point {x[i]}: q_cnts{len(final_q)}')
-            print(f'idx:{idx[i]}')
-        c = input()
+        
         if return_mask:
             return final_mask,final_q,idx
         else:
@@ -118,15 +118,13 @@ class DataGenerator():
         # compute d
         Np = q.shape[0]
         q_template,link_idx = self.given_x_find_q(x)
-        # print('link index',link_idx)
 
-        # if link_idx.min() == 0:#TODO why?
-        #     return torch.zeros(Np).to(self.device)
-        # else:
-        if True:
-            link_idx[link_idx==7] = 6
-            link_idx[link_idx==8] = 7
-            d = torch.inf*torch.ones(Np,7).to(self.device)
+        if link_idx.min() == 0:#TODO why?
+            return torch.zeros(Np).to(self.device)
+        else:
+            # link_idx[link_idx==7] = 6
+            # link_idx[link_idx==8] = 7 #TODO why?
+            d = torch.inf*torch.ones(Np,self.robot.dof).to(self.device)
             for i in range(link_idx.min(),link_idx.max()+1):
                 mask = (link_idx==i)
                 d_norm = torch.norm(q[:,:i].unsqueeze(1)- q_template[mask][:,:i].unsqueeze(0),dim=-1)
@@ -185,8 +183,20 @@ def analysis_data(x):
 
 if __name__ == "__main__":
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-    gen = DataGenerator(device)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--robot', default='panda', type=str,choices=['panda','leaphand','dexhand'])
+    args = parser.parse_args()
+    
+    robot = args.robot
+    CUR_DIR = os.path.dirname(os.path.abspath(__file__))
+    paths = {
+        'urdf': os.path.join(CUR_DIR,f'../../RDF/descriptions/{args.robot}/*.urdf'),
+        'meshes': os.path.join(CUR_DIR,f'../../RDF/descriptions/{args.robot}/meshes/*.stl'),
+        'points': os.path.join(CUR_DIR,f'../../RDF/data/{args.robot}/sdf_points/'),
+        'model':os.path.join(CUR_DIR, f'../../RDF/models/{args.robot}/BP_8.pt'),
+        'data': os.path.join(CUR_DIR,f'data/{args.robot}/data.pt'),
+    }
+    gen = DataGenerator(device,robot,paths)
     # x = torch.tensor([[0.5,0.5,0.5]]).to(device)
     # gen.single_point_generation(x)
     gen.generate_offline_data()
