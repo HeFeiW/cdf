@@ -16,8 +16,8 @@ pandaNumDofs = 16
 URDF_PATH = os.path.join(CUR_PATH,"../../RDF/descriptions/leaphand/leap_hand_left.urdf")
 
 # restpose
-rp = [0.0,0.0, -1.57461, -1.60788, -0.785175,   1.54666, -0.882595, 0.02, 0.02]
-
+# rp = [0.0,0.0, -1.57461, -1.60788, -0.785175,   1.54666, -0.882595, 0.02, 0.02] # panda
+rp = [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0] #leaphand
 class PandaSim():
     def __init__(self, bullet_client, base_pos, base_rot):
         self.bullet_client = bullet_client

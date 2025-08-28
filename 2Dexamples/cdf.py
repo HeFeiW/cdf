@@ -99,7 +99,6 @@ class CDF2D:
 
             d = self.inference_sdf(q,obj_lists)
             cost = torch.sum(d**2)
-            print('cost shape: ',cost.shape)
             return cost
         
         t0 = time.time()
