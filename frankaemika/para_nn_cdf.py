@@ -17,8 +17,9 @@ import argparse
 CUR_PATH = os.path.dirname(os.path.realpath(__file__))
 from mlp import MLPRegression
 sys.path.append(os.path.join(CUR_PATH,'../../RDF/panda_layer'))
-from robot_layer import RobotLayer
-import bf_sdf
+from parallel_robot_layer import ParallelRobotLayer
+sys.path.append(os.path.join(CUR_PATH,'../../RDF'))
+from parallel_bf_sdf import ParallelBPSDF
 
 PI = math.pi
 # torch.manual_seed(10)
@@ -26,39 +27,45 @@ np.random.seed(10)
 # torch.autograd.set_detect_anomaly(True)
 
 class CDF:
-    def __init__(self,device,paths,robot,signed_distance=False,writer=None) -> None:
+    def __init__(self,device,paths,robot,signed_distance=False,writer=None,serial_idx=0) -> None:
         # device
         self.device = device  
         self.writer = writer
         self.batch_x = 10
         self.batch_q = 100
         self.max_q_per_link = 100
-        # # uncomment these lines to process the generated data and train your own CDF
-        self.raw_data = np.load(paths['raw_data'],allow_pickle=True).item()
-        self.process_data(self.raw_data)
+        self.paths = paths
+        # panda robot
+        self.robot = ParallelRobotLayer(device=device,paths=paths,robot=robot)
+        self.serial_idx = serial_idx
+        # uncomment these lines to process the generated data and train your own CDF
+        # self.raw_data = np.load(paths['raw_data'],allow_pickle=True).item()
+        # self.process_data(self.raw_data)
         self.data_path = paths['data']
         self.data = self.load_data(self.data_path)
         self.len_data = len(self.data['k'])
         self.signed_distance = signed_distance
-        # panda robot
-        self.robot = RobotLayer(device=device,paths=paths,robot=robot)
+        
         self.paths = paths
         self.bp_sdf_model_path = paths['model']
-        self.bp_sdf = bf_sdf.BPSDF(8,-1.0,1.0,self.robot,self.bp_sdf_model_path,device)
+        self.bp_sdf = ParallelBPSDF(8,-1.0,1.0,self.robot,self.bp_sdf_model_path,device)
         self.bp_sdf_model = torch.load(self.bp_sdf_model_path)
         self.model_dict = paths['model_dict']
         # --- TODO ---
         if robot == 'panda':
             self.used_joints = [0,1,2,3,4,5,6]
+        elif robot == 'leaphand':
+            self.used_joints = [0,1,2,3]
 
     def process_data(self,data):
         # 从原始数据（data）中降采样（pytorch3d.ops.sample_farthest_points）每个关节的采样点,
         # "每个关节"指的是，在每个采样点上，每个关节作为“最后碰撞关节”的采样点数量不超过max_q_per_link
-        # data: {key: {'x': (N,3), 'q': (N,7), 'idx': (N)}}
+        # data: {key: {'x': (N,3), 'q': (N,DoF), 'idx': (N)}}
         # idx: (N) stands for which link is the last link that causes the collision
-        # final_data: {'x': (G,3), 'q': (G,max_q_per_link,7,7), 'k': (G)}
+        # final_data: {'x': (G,3), 'q': (G,max_q_per_link,DoF,DoF), 'k': (G)}
         # G is the number of grids
         import pytorch3d.ops 
+        DoF = self.robot.serials[self.serial_idx].dof
         keys = list(data.keys())  # Create a copy of the keys
         processed_data = {}
         # print('data_shape:',{k:data[k].shape for k in keys})
@@ -68,17 +75,17 @@ class CDF:
                 # processed_data[k] = {
                 #     'x':torch.from_numpy(data[k]['x']).float().to(self.device),
                 #     # 如果没有采样点，就用inf填充
-                #     'q': torch.inf*torch.ones(self.max_q_per_link,7,7).to(self.device)
+                #     'q': torch.inf*torch.ones(self.max_q_per_link,DoF,DoF).to(self.device)
                 # }
                 data.pop(k)
                 continue
             q = torch.from_numpy(data[k]['q']).float().to(self.device)
-            # q:(N,7) N: number of samples for this key
+            # q:(N,DoF) N: number of samples for this key
             q_idx = torch.from_numpy(data[k]['idx']).float().to(self.device)
             # q_idx:(N) stands for which link is the last link that causes the collision
-            q_idx[q_idx==7] = 6
-            q_idx[q_idx==8] = 7
-            q_lib = torch.inf*torch.ones(self.max_q_per_link,7,7).to(self.device)
+            # q_idx[q_idx==7] = 6
+            # q_idx[q_idx==8] = 7
+            q_lib = torch.inf*torch.ones(self.max_q_per_link,DoF,DoF).to(self.device)
             for i in range(1,8):
                 mask = (q_idx==i) # find the samples where the last colliding link is i
                 # 如果这个link的采样点多于max_q_per_link，就用farthest point sampling降采样，否则就直接存储
@@ -89,9 +96,9 @@ class CDF:
                     # print(q_lib[:,:,i]) 
                 elif len(q[mask])>0:
                     q_lib[:len(q[mask]),:,i-1] = q[mask]
-            # q_lib:(max_q_per_link,7,7) 7: number of links
-            # (first "7" stands for index of the q sample,
-            # and second "7" stands for the link index,
+            # q_lib:(max_q_per_link,DoF,DoF) DoF: number of links
+            # (first "DoF" stands for index of the q sample,
+            # and second "DoF" stands for the link index,
             # i.e. to get all sample for link i, use q_lib[:,:,i-1])
             processed_data[k] = {
                 'x':torch.from_numpy(data[k]['x']).float().to(self.device),
@@ -103,7 +110,7 @@ class CDF:
             'k':torch.tensor([k for k in processed_data.keys()]).to(self.device)
         }
         # print('final_data:',final_data['x'].shape,final_data['q'].shape,final_data['k'].shape)
-        torch.save(final_data,os.path.join(CUR_PATH,'data_again.pt'))
+        torch.save(final_data,self.paths['data'])
         return data
     
     def load_data(self,path):
@@ -112,7 +119,7 @@ class CDF:
 
     def select_data(self):
         # x_batch:(batch_x,3)
-        # q_batch:(batch_q,7)
+        # q_batch:(batch_q,DoF)
         # d:(batch_x,batch_q)
         
         x = self.data['x']
@@ -127,7 +134,7 @@ class CDF:
         return x_batch,q_batch,d,grad
     def select_data_signed(self):
         # x_batch:(batch_x,3)
-        # q_batch:(batch_q,7)
+        # q_batch:(batch_q,DoF)
         # d:(batch_x,batch_q)
         
         x = self.data['x']
@@ -142,14 +149,14 @@ class CDF:
         return x_batch,q_batch,d,grad
 
     def decode_distance(self,q_batch,q_lib):
-        # batch_q:(batch_q,7)
-        # q_lib:(batch_x,self.max_q_per_link,7,7)
-
+        # batch_q:(batch_q,DoF)
+        # q_lib:(batch_x,self.max_q_per_link,DoF,DoF)
+        DoF = self.robot.serials[self.serial_idx].dof
         batch_x = q_lib.shape[0]
         batch_q = q_batch.shape[0]
-        d_tensor = torch.ones(batch_x,batch_q,7).to(self.device)*torch.inf
-        grad_tensor  = torch.zeros(batch_x,batch_q,7,7).to(self.device)
-        for i in range(7):
+        d_tensor = torch.ones(batch_x,batch_q,DoF).to(self.device)*torch.inf
+        grad_tensor  = torch.zeros(batch_x,batch_q,DoF,DoF).to(self.device)
+        for i in range(DoF):
             q_lib_temp = q_lib[:,:,:i+1,i].reshape(batch_x*self.max_q_per_link,-1).unsqueeze(0).expand(batch_q,-1,-1)
             q_batch_temp = q_batch[:,:i+1].unsqueeze(1).expand(-1,batch_x*self.max_q_per_link,-1)
             d_norm = torch.norm((q_batch_temp - q_lib_temp),dim=-1).reshape(batch_q,batch_x,self.max_q_per_link)
@@ -163,18 +170,19 @@ class CDF:
             d_tensor[:,:,i] = d_norm_min.transpose(0,1)
 
         d,d_min_idx = d_tensor.min(dim=-1)
-        grad_final = grad_tensor.gather(3,d_min_idx.unsqueeze(-1).unsqueeze(-1).expand(-1,-1,7,7))[:,:,:,0]
+        grad_final = grad_tensor.gather(3,d_min_idx.unsqueeze(-1).unsqueeze(-1).expand(-1,-1,DoF,DoF))[:,:,:,0]
         return d, grad_final
     def decode_distance_signed(self,q_batch,q_lib,x_batch):
-        # batch_q:(batch_q,7)
-        # q_lib:(batch_x,self.max_q_per_link,7,7)
+        # batch_q:(batch_q,DoF)
+        # q_lib:(batch_x,self.max_q_per_link,DoF,DoF)
         # x_batch:(batch_x,3)
         # return d:(batch_x,batch_q)
+        DoF = self.robot.serials[self.serial_idx].dof
         batch_x = q_lib.shape[0]
         batch_q = q_batch.shape[0]
-        d_tensor = torch.ones(batch_x,batch_q,7).to(self.device)*torch.inf
-        grad_tensor  = torch.zeros(batch_x,batch_q,7,7).to(self.device)
-        for i in range(7):
+        d_tensor = torch.ones(batch_x,batch_q,DoF).to(self.device)*torch.inf
+        grad_tensor  = torch.zeros(batch_x,batch_q,DoF,DoF).to(self.device)
+        for i in range(DoF):
             q_lib_temp = q_lib[:,:,:i+1,i].reshape(batch_x*self.max_q_per_link,-1).unsqueeze(0).expand(batch_q,-1,-1)
             q_batch_temp = q_batch[:,:i+1].unsqueeze(1).expand(-1,batch_x*self.max_q_per_link,-1)
             d_norm = torch.norm((q_batch_temp - q_lib_temp),dim=-1).reshape(batch_q,batch_x,self.max_q_per_link)
@@ -187,30 +195,35 @@ class CDF:
         d_ts = self.compute_sdf(x_batch,q_batch)
         mask =  (d_ts < 0).transpose(0,1)
         d[mask] = -d[mask]
-        grad_final = grad_tensor.gather(3,d_min_idx.unsqueeze(-1).unsqueeze(-1).expand(-1,-1,7,7))[:,:,:,0]
+        grad_final = grad_tensor.gather(3,d_min_idx.unsqueeze(-1).unsqueeze(-1).expand(-1,-1,DoF,DoF))[:,:,:,0]
         grad_final[mask] = -grad_final[mask]  # 对有符号距离的梯度也取负号
         return d, grad_final
     def compute_sdf(self,x,q,return_index = False):
         # x : (Nx,3)
-        # q : (Nq,7)
+        # q : (Nq,DoF)
         # return_index : if True, return the index of link that is closest to x
         # return d : (Nq,Nx) the signed distance from x to q
         # return idx : (Nq) optional
 
         pose = torch.eye(4).unsqueeze(0).to(self.device).expand(len(q),4,4).float()
+        used_links = self.robot.serials[self.serial_idx].all_links.copy()
+        if 'palm_lower_left' in used_links:
+            used_links.remove('palm_lower_left')
         if not return_index:
-            d,_ = self.bp_sdf.get_whole_body_sdf_batch(x,pose, q,self.bp_sdf_model,use_derivative =False)
+            d,_ = self.bp_sdf.get_serial_sdf_batch(x,pose, q,self.bp_sdf_model,use_derivative =False,serial_idx = self.serial_idx,used_links=used_links)
             # d = d.min(dim=1)[0]
             return d
         else:
-            d,_,idx = self.bp_sdf.get_whole_body_sdf_batch(x,pose, q,self.bp_sdf_model,use_derivative =False,return_index = True)
+            d,_,idx = self.bp_sdf.get_serial_sdf_batch(x,pose, q,self.bp_sdf_model,use_derivative =False,return_index = True,serial_idx = self.serial_idx,used_links=used_links)
             # d,pts_idx = d.min(dim=1)
             idx = idx[torch.arange(len(idx)),idx]
             return d,idx 
     def sample_q(self,batch_q = None):
+        serial = self.robot.serials[self.serial_idx]
+        DoF = serial.dof
         if batch_q is None:
             batch_q = self.batch_q
-        q_sampled = self.robot.theta_min + torch.rand(batch_q,7).to(self.device)*(self.robot.theta_max-self.robot.theta_min)
+        q_sampled = serial.theta_min + torch.rand(batch_q,DoF).to(self.device)*(serial.theta_max-serial.theta_min)
         q_sampled.requires_grad = True
         return q_sampled
     
@@ -220,8 +233,10 @@ class CDF:
 
     def train_nn(self,epoches=500):
         # model
-        # input: [x,q] (B,3+7)
-        model = MLPRegression(input_dims=10, output_dims=1, mlp_layers=[1024, 512, 256, 128, 128],skips=[], act_fn=torch.nn.ReLU, nerf=True)
+        # input: [x,q] (B,3+DoF)
+        DoF = self.robot.serials[self.serial_idx].dof
+        input_dims = 3 + DoF
+        model = MLPRegression(input_dims=input_dims, output_dims=1, mlp_layers=[1024, 512, 256, 128, 128],skips=[], act_fn=torch.nn.ReLU, nerf=True)
         model.to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5000,
@@ -238,15 +253,15 @@ class CDF:
                 else:
                     x_batch,q_batch,d,gt_grad = self.select_data()
                 # x_batch:(batch_x,3)
-                # q_batch:(batch_q,7)
+                # q_batch:(batch_q,DoF)
                 # d:(batch_x,batch_q)
-                # grad:(batch_x,batch_q,7)
+                # grad:(batch_x,batch_q,DoF)
                 x_inputs = x_batch.unsqueeze(1).expand(-1,self.batch_q,-1).reshape(-1,3)
-                q_inputs = q_batch.unsqueeze(0).expand(self.batch_x,-1,-1).reshape(-1,7)
+                q_inputs = q_batch.unsqueeze(0).expand(self.batch_x,-1,-1).reshape(-1,DoF)
 
                 inputs = torch.cat([x_inputs,q_inputs],dim=-1)
                 outputs = d.reshape(-1,1)
-                gt_grad = gt_grad.reshape(-1,7)
+                gt_grad = gt_grad.reshape(-1,DoF)
                 weights = torch.ones_like(outputs).to(device)
                 # weights = (1/outputs).clamp(0,1)
 
@@ -292,20 +307,23 @@ class CDF:
         return model
     
     def inference(self,x,q,model):
+        DoF = self.robot.serials[self.serial_idx].dof
         model.eval()
         x,q = x.to(self.device),q.to(self.device)
         # q.requires_grad = True
         # x:(len(x),3)
-        # q:(len(q),7)
+        # q:(len(q),DoF)
         x_cat = x.unsqueeze(1).expand(-1,len(q),-1).reshape(-1,3)
-        q_cat = q.unsqueeze(0).expand(len(x),-1,-1).reshape(-1,7)
+        q_cat = q.unsqueeze(0).expand(len(x),-1,-1).reshape(-1,DoF)
         inputs = torch.cat([x_cat,q_cat],dim=-1)
         cdf_pred = model.forward(inputs)
+        # cdf_pred:(len(x)*len(q),1)
         return cdf_pred
     
     def inference_d_wrt_q(self,x,q,model,return_grad = True):
         cdf_pred = self.inference(x,q,model)
-        d = cdf_pred.reshape(len(x),len(q)).min(dim=0)[0]
+        # cdf_pred先取绝对值，再reshape成(len(x),len(q))
+        d = cdf_pred.abs().reshape(len(x),len(q)).min(dim=0)[0]
         if return_grad:
             grad = torch.autograd.grad(d,q,torch.ones_like(d),retain_graph=True,create_graph=True)[0]
             # dgrad = torch.autograd.grad(grad,q,torch.ones_like(grad),retain_graph=True,create_graph=True)[0]
@@ -387,28 +405,29 @@ class CDF:
 
     def check_data(self):
         # x_batch:(batch_x,3)
-        # q_batch:(batch_q,7)
+        # q_batch:(batch_q,DoF)
         # d:(batch_x,batch_q)
-        # grad:(batch_x,batch_q,7)
+        # grad:(batch_x,batch_q,DoF)
         x_batch,q_batch,d,grad = self.select_data()
         q_proj = self.projection(q_batch,d,grad)
-
+        serial = self.robot.serials[self.serial_idx]
         # visualize
         import trimesh
         pose = torch.eye(4).unsqueeze(0).to(self.device).float()
         for q0,q1 in zip(q_batch,q_proj[1]):
             scene = trimesh.Scene()
             scene.add_geometry(trimesh.PointCloud(x_batch.data.cpu().numpy(),colors=[255,0,0]))
-            robot_mesh0 = self.robot.get_forward_robot_mesh(pose, q0.unsqueeze(0))[0]
+            robot_mesh0 = serial.get_forward_robot_mesh(pose, q0.unsqueeze(0))[0]
             robot_mesh0 = np.sum(robot_mesh0)
             robot_mesh0.visual.face_colors = [0,255,0,100]
             scene.add_geometry(robot_mesh0)
-            robot_mesh1 = self.robot.get_forward_robot_mesh(pose, q1.unsqueeze(0))[0]
+            robot_mesh1 = serial.get_forward_robot_mesh(pose, q1.unsqueeze(0))[0]
             robot_mesh1 = np.sum(robot_mesh1)
             robot_mesh1.visual.face_colors = [0,0,255,100]
             scene.add_geometry(robot_mesh1)
             scene.show()
     def sample_without_fps(self,data):
+        DoF = self.robot.serials[self.serial_idx].dof
         keys = list(data.keys())  # Create a copy of the keys
         processed_data = {}
         print('data_shape:',{k:data[k]['q'].shape for k in keys})
@@ -419,9 +438,9 @@ class CDF:
                 continue
             q = torch.from_numpy(data[k]['q']).float().to(self.device)
             q_idx = torch.from_numpy(data[k]['idx']).float().to(self.device)
-            q_idx[q_idx==7] = 6
-            q_idx[q_idx==8] = 7
-            q_lib = torch.inf*torch.ones(self.max_q_per_link,7,7).to(self.device)
+            # q_idx[q_idx==7] = 6
+            # q_idx[q_idx==8] = 7
+            q_lib = torch.inf*torch.ones(self.max_q_per_link,DoF,DoF).to(self.device)
             for i in range(1,8):
                 mask = (q_idx==i)
                 if len(q[mask])>self.max_q_per_link:
@@ -451,7 +470,8 @@ class CDF:
     def eval_model(self,model,joint_idx,q_probe):
 
         # model
-        # input: [x,q] (B,3+7)
+        # input: [x,q] (B,3+DoF)
+        DoF = self.robot.serials[self.serial_idx].dof
         model = MLPRegression(input_dims=10, output_dims=1, mlp_layers=[1024, 512, 256, 128, 128],skips=[], act_fn=torch.nn.ReLU, nerf=True)
         # 取最后一个（字典值最大的）epoch的模型
         epoches = torch.load(os.path.join(CUR_PATH,self.model_dict)).keys()
@@ -474,11 +494,11 @@ class CDF:
                 x_batch,q_batch,d,gt_grad = self.select_data()
 
                 x_inputs = x_batch.unsqueeze(1).expand(-1,self.batch_q,-1).reshape(-1,3)
-                q_inputs = q_batch.unsqueeze(0).expand(self.batch_x,-1,-1).reshape(-1,7)
+                q_inputs = q_batch.unsqueeze(0).expand(self.batch_x,-1,-1).reshape(-1,DoF)
 
                 inputs = torch.cat([x_inputs,q_inputs],dim=-1)
                 outputs = d.reshape(-1,1)
-                gt_grad = gt_grad.reshape(-1,7)
+                gt_grad = gt_grad.reshape(-1,DoF)
                 weights = torch.ones_like(outputs).to(device)
                 # weights = (1/outputs).clamp(0,1)
 
@@ -518,28 +538,32 @@ class CDF:
         return model
     def my_eval_1(self,model):
         # model
-        # input: [x,q] (B,3+7)
+        # input: [x,q] (B,3+DoF)
         # 在data中取出8个构成cube的点
-        cube_poses = [[0,0,0],[0,0,10],[0,10,10],[5,10,10],[10,10,10],[10,10,0]]
+        n_cube=8
+        idx = torch.random.randint(0,len(self.data['x']),(n_cube,))
+        cube_poses = self.data['x'][idx] 
+        cube_ground_truth_q = self.data['q'][idx]
         # cube_poses=[[10,10,0]]
-        for cube_pos in cube_poses:
+        for cube_points,gt_q in zip(cube_poses,cube_ground_truth_q):
         
             cube_edge = 0 # cube的边长
             print(f'data_x_shape:{self.data["x"].shape}')
-            cube_points  = torch.stack([self.data['x'][20*20*x+20*y+z] \
-                                                        for x in [cube_pos[0],cube_pos[0]+cube_edge] \
-                                                        for y in [cube_pos[1],cube_pos[1]+cube_edge]\
-                                                        for z in [cube_pos[2],cube_pos[2]+cube_edge]]).float().to(device)
-            cube_ground_truth_q  = torch.stack([self.data['q'][20*20*x+20*y+z] \
-                                                        for x in [cube_pos[0],cube_pos[0]+cube_edge] \
-                                                        for y in [cube_pos[1],cube_pos[1]+cube_edge]\
-                                                        for z in [cube_pos[2],cube_pos[2]+cube_edge]]).float().to(device)
-            print(f'cube_points:{cube_ground_truth_q.shape}')
-            DoF = 7
+            # cube_points  = torch.stack([self.data['x'][20*20*x+20*y+z] \
+            #                                             for x in [cube_pos[0],cube_pos[0]+cube_edge] \
+            #                                             for y in [cube_pos[1],cube_pos[1]+cube_edge]\
+            #                                             for z in [cube_pos[2],cube_pos[2]+cube_edge]]).float().to(device)
+            # cube_ground_truth_q  = torch.stack([self.data['q'][20*20*x+20*y+z] \
+            #                                             for x in [cube_pos[0],cube_pos[0]+cube_edge] \
+            #                                             for y in [cube_pos[1],cube_pos[1]+cube_edge]\
+            #                                             for z in [cube_pos[2],cube_pos[2]+cube_edge]]).float().to(device)
+            print(f'cube_points:{gt_q.shape}')
+            serial = self.robot.serials[self.serial_idx]
+            DoF = serial.dof
             bp_sdf = self.bp_sdf
             bdf_model = torch.load(self.bp_sdf_model_path)
-            q_max = self.robot.theta_max[self.used_joints]
-            q_min = self.robot.theta_min[self.used_joints]
+            q_max = serial.theta_max[self.used_joints]
+            q_min = serial.theta_min[self.used_joints]
             # device
             self.device = device
             # 在DoF维度上采样test_sample_num个点
@@ -550,8 +574,9 @@ class CDF:
             # 获得模型预测的距离和梯度
             pred_d, pred_grad = self.inference_d_wrt_q(cube_points,q_sampled,model,return_grad = True)
             # 计算ground truth的距离和梯度
-            from data_generator import DataGenerator
-            data_generator = DataGenerator(self.device,self.robot,self.paths,used_joints=self.used_joints)
+            from parallel_data_generator import DataGenerator
+            data_generator = DataGenerator(self.device,self.robot,self.paths,serial_idx=self.serial_idx)
+            data_generator.serial_idx = self.serial_idx
             gt_d = data_generator.distance_q(cube_points,q_sampled)
             # print(f'pred_d:{pred_d.shape}, gt_d:{gt_d.shape}')
             d_error = pred_d - gt_d
@@ -609,7 +634,7 @@ class CDF:
             plt.title('Distance Histogram')
             plt.legend()
             plt.tight_layout()
-            plt.savefig(os.path.join(CUR_PATH,f'my_eval_{cube_pos[0]}_{cube_pos[1]}_{cube_pos[2]}_{cube_edge}.png'))
+            plt.savefig(os.path.join(CUR_PATH,f'my_eval_{cube_points}.png'))
             plt.show()
             # 计算MAE和RMSE
             pred_d = pred_d.squeeze(-1).reshape(-1).cpu().detach().numpy()
@@ -620,34 +645,43 @@ class CDF:
             print(f'MAE_d: {MAE_d}, RMSE_d: {RMSE_d}')
     def my_eval_2(self,model):
         # model
-        # input: [x,q] (B,3+7)
+        # input: [x,q] (B,3+DoF)
         # 在data中取出8个构成cube的点
-        from data_generator import DataGenerator
-        data_generator = DataGenerator(self.device,self.robot.robot,self.paths,used_joints=self.used_joints)
-        cube_poses = [[0,0,0],[0,0,10],[0,10,10],[5,10,10],[10,10,10],[10,10,0]]
+        from parallel_data_generator import DataGenerator
+        data_generator = DataGenerator(self.device,self.robot,self.paths,serial_idx=self.serial_idx)
+        data_generator.serial_idx = self.serial_idx
+        n_cube = 8
+        idx = torch.randint(0,len(self.data['x']),(n_cube,))
+        cube_poses = self.data['x'][idx] 
+        cube_ground_truth_q = self.data['q'][idx]
         # cube_poses=[[10,10,0]]
-        for cube_pos in cube_poses:
+        for cube_points, gt_q in zip(cube_poses,cube_ground_truth_q):
         
-            cube_edge = 0 # cube的边长
-            cube_points  = torch.stack([self.data['x'][20*20*x+20*y+z] \
-                                                        for x in [cube_pos[0],cube_pos[0]+cube_edge] \
-                                                        for y in [cube_pos[1],cube_pos[1]+cube_edge]\
-                                                        for z in [cube_pos[2],cube_pos[2]+cube_edge]]).float().to(device)
-            cube_ground_truth_q  = torch.stack([self.data['q'][20*20*x+20*y+z] \
-                                                        for x in [cube_pos[0],cube_pos[0]+cube_edge] \
-                                                        for y in [cube_pos[1],cube_pos[1]+cube_edge]\
-                                                        for z in [cube_pos[2],cube_pos[2]+cube_edge]]).float().to(device)
+            # cube_edge = 0 # cube的边长
+            # cube_points  = torch.stack([self.data['x'][20*20*x+20*y+z] \
+            #                                             for x in [cube_pos[0],cube_pos[0]+cube_edge] \
+            #                                             for y in [cube_pos[1],cube_pos[1]+cube_edge]\
+            #                                             for z in [cube_pos[2],cube_pos[2]+cube_edge]]).float().to(device)
+            # cube_ground_truth_q  = torch.stack([self.data['q'][20*20*x+20*y+z] \
+            #                                             for x in [cube_pos[0],cube_pos[0]+cube_edge] \
+            #                                             for y in [cube_pos[1],cube_pos[1]+cube_edge]\
+            #                                             for z in [cube_pos[2],cube_pos[2]+cube_edge]]).float().to(device)
             # cube_points:(N,3) (N=sample_num)
             # cube_ground_truth_q:(N,100,DoF,DoF)
-            DoF = 7
+            cube_points = cube_points.float().to(device).unsqueeze(0)
+            serial = self.robot.serials[self.serial_idx]
+            DoF = serial.dof
             bp_sdf = self.bp_sdf
             bdf_model = torch.load(self.bp_sdf_model_path)
-            q_max = self.robot.theta_max[self.used_joints]
-            q_min = self.robot.theta_min[self.used_joints]
+            q_max = serial.theta_max[self.used_joints]
+            q_min = serial.theta_min[self.used_joints]
             # 在DoF维度上采样test_sample_num个点
             test_sample_num = 1000
             q_sampled = torch.rand(DoF).to(self.device).unsqueeze(0).expand(test_sample_num,-1) * (q_max-q_min) + q_min
-            eval_joint_idx = torch.randint(5,DoF,(1,)).to(self.device) 
+            if self.robot.robot == 'panda':
+                eval_joint_idx = torch.randint(5,DoF,(1,)).to(self.device) 
+            else:
+                eval_joint_idx = torch.randint(0,DoF,(1,)).to(self.device)
             # 在5-6之间采样一个整数作为评估的关节（因为前面几个关节对末端影响较大，后面几个关节可能过于平滑）
             print(f'eval_joint_idx:{eval_joint_idx}')
             q_sampled[:,eval_joint_idx] = torch.linspace(\
@@ -716,10 +750,10 @@ class CDF:
             plt.tight_layout()
             # 在图上添加文字
             text = f'Joint {eval_joint_idx.item()} Evaluation'+\
-                f'\nCube Position: {cube_pos}\nCube Edge: {cube_edge}\n' + \
+                f'\nCube Position: {cube_points}' + \
                     f"q Sampled: {q_sampled[0].cpu().detach().numpy()}"
             plt.text(0.4, 0.95, text, horizontalalignment='left', verticalalignment='center', transform=plt.gca().transAxes, fontsize=10)
-            plt.savefig(os.path.join(CUR_PATH,f'slice_{cube_pos[0]}_{cube_pos[1]}_{cube_pos[2]}_{cube_edge}.png'))
+            plt.savefig(os.path.join(CUR_PATH,f'slice_{cube_points}.png'))
             # plt.show()
             # 计算MAE和RMSE
             pred_d = pred_d.squeeze(-1).reshape(-1).cpu().detach().numpy()
@@ -733,8 +767,8 @@ class CDF:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Panda CDF Model Training and Evaluation')
-    parser.add_argument('--data_path', type=str, default='data.pt', help='Path to the data file')
-    parser.add_argument('--raw', type=str, default='data_finger_no_base.npy', help='Path to the raw data file')
+    parser.add_argument('--data_path', type=str, default='data_thumb.pt', help='Path to the data file')
+    parser.add_argument('--raw', type=str, default='data_thumb.npy', help='Path to the raw data file')
     parser.add_argument('--with_writer', action='store_true', help='Whether to use TensorBoard writer')
     parser.add_argument('--eval', action='store_true', help='Whether to evaluate the model')
     parser.add_argument('--train', action='store_true', help='Whether to train the model')
@@ -744,8 +778,9 @@ if __name__ == "__main__":
     parser.add_argument('--signed_distance', action='store_true', help='Whether to use signed distance')
     parser.add_argument('--max_q_per_link', type=int, default=100, help='Maximum number of q samples per link')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use for training/evaluation')
-    parser.add_argument('--model_dict', type=str, default='finger_no_base.pt', help='Path to save/load the model dictionary')
+    parser.add_argument('--model_dict', type=str, default='thumb_no_base.pt', help='Path to save/load the model dictionary')
     parser.add_argument('--robot', type=str, default='panda', help='Robot type (e.g., panda)',choices=['panda','dexhand','leaphand'])
+    parser.add_argument('--serial_idx', type=int, default=0, help='Serial index for different runs')
     args = parser.parse_args()
     print(f'args:{args}')
     c = input('press enter to continue')
@@ -788,13 +823,14 @@ if __name__ == "__main__":
         
         writer.add_text('info', 'This is a test for Panda CDF model training and evaluation.')
         writer.add_hparams(hparam_dict=hprams, metric_dict={})
-        cdf = CDF(device,paths=paths,robot=args.robot,writer=writer,signed_distance=args.signed_distance)
+        cdf = CDF(device,paths=paths,robot=args.robot,writer=writer,signed_distance=args.signed_distance,serial_idx=args.serial_idx)
     else:
-        cdf = CDF(device,paths=paths,robot=args.robot,writer=None,signed_distance=args.signed_distance)
+        cdf = CDF(device,paths=paths,robot=args.robot,writer=None,signed_distance=args.signed_distance,serial_idx=args.serial_idx)
     if args.train:
         cdf.train_nn(epoches=hprams['epoches'])
     if args.eval:
-        model = MLPRegression(input_dims=10, output_dims=1, mlp_layers=[1024, 512, 256, 128, 128],skips=[], act_fn=torch.nn.ReLU, nerf=True)
-        model.load_state_dict(torch.load((paths['model_dict']))[49900])
+        input_dims = cdf.robot.serials[cdf.serial_idx].dof + 3
+        model = MLPRegression(input_dims=input_dims, output_dims=1, mlp_layers=[1024, 512, 256, 128, 128],skips=[], act_fn=torch.nn.ReLU, nerf=True)
+        model.load_state_dict(torch.load((paths['model_dict']))[18500])
         model.to(device)
         cdf.my_eval_2(model)

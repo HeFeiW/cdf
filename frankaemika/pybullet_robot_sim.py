@@ -37,6 +37,18 @@ class PandaSim():
         print("panda=", self.panda)
         self.reset()
         self.t = 0.
+        # --- construct Joint2Idx ----
+        self.Joint2Idx = {}
+        control_idx = 0
+        for i in range(self.bullet_client.getNumJoints(self.panda)):
+            info = self.bullet_client.getJointInfo(self.panda, i)
+            jointName = info[1].decode('UTF-8')
+            jointType = info[2]
+            if jointType in [self.bullet_client.JOINT_REVOLUTE, self.bullet_client.JOINT_PRISMATIC]:
+                self.Joint2Idx[jointName] = (control_idx,i)
+                control_idx += 1
+        self.dof = control_idx
+        print("Joint2Idx=", self.Joint2Idx)
         # self.set_joint_positions(rp)
 
     def reset(self):
@@ -46,6 +58,7 @@ class PandaSim():
             info = self.bullet_client.getJointInfo(self.panda, j)
             jointName = info[1]
             jointType = info[2]
+            print("jointName=", jointName, "jointType=", jointType, "index=", index)
             if (jointType == self.bullet_client.JOINT_PRISMATIC):
                 self.bullet_client.resetJointState(self.panda, j, self.rp[index])
                 index = index + 1
@@ -54,22 +67,20 @@ class PandaSim():
                 index = index + 1
 
     def set_joint_positions(self, joint_positions):
-        for i in range(pandaNumDofs):
-            self.bullet_client.setJointMotorControl2(self.panda, i, self.bullet_client.POSITION_CONTROL,
-                                                     joint_positions[i], force=240.)
-        self.set_finger_positions(0.04)
-
-    def set_finger_positions(self, gripper_opening):
-        self.bullet_client.setJointMotorControl2(self.panda, 9, self.bullet_client.POSITION_CONTROL,
-                                                 gripper_opening/2, force=5 * 240.)
-        self.bullet_client.setJointMotorControl2(self.panda, 10, self.bullet_client.POSITION_CONTROL,
-                                                 -gripper_opening/2, force=5 * 240.)
+        # for i in range(pandaNumDofs):
+        #     self.bullet_client.setJointMotorControl2(self.panda, i, self.bullet_client.POSITION_CONTROL,
+        #                                              joint_positions[i], force=240.)
+        for q_idx,joint_idx in self.Joint2Idx.values():
+            self.bullet_client.setJointMotorControl2(self.panda, joint_idx, self.bullet_client.POSITION_CONTROL,
+                                                     joint_positions[q_idx], force=240.)
 
 
     def get_joint_positions(self):
-        joint_state = []
-        for i in range(pandaNumDofs):
-            joint_state.append(self.bullet_client.getJointState(self.panda, i)[0])
+        joint_state = np.zeros(self.dof)
+        # for i in range(pandaNumDofs):
+        #     joint_state.append(self.bullet_client.getJointState(self.panda, i)[0])
+        for q_idx,joint_idx in self.Joint2Idx.values():
+            joint_state[q_idx] = self.bullet_client.getJointState(self.panda, joint_idx)[0]
         return joint_state
 
 class SphereManager:

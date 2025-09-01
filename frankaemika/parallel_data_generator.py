@@ -21,11 +21,10 @@ import argparse
 import time
 import math
 import copy
-
 PI = math.pi
 
 class DataGenerator():
-    def __init__(self,device,robot,paths):
+    def __init__(self,device,robot,paths,serial_idx = None):
         # panda model
         self.robot = robot
         self.paths = paths
@@ -34,7 +33,7 @@ class DataGenerator():
         self.model = torch.load(self.bp_sdf_model_path)
         # device
         self.device = device
-        self.serial_idx = None
+        self.serial_idx = serial_idx
         # data generation
         # workspace大小：1m x 1m x 1m
         # 20 x 20 x 20 = 8000个点
@@ -44,7 +43,12 @@ class DataGenerator():
         self.batchsize = 20000       # batch size of q
         # self.pose = torch.eye(4).unsqueeze(0).to(self.device).expand(self.batchsize,4,4).float()
         self.epsilon = 1e-3         # distance threshold to filter data
-
+        self.used_links = self.robot.serials[self.serial_idx].all_links.copy()
+        print('used_links:',self.used_links)
+        if 'palm_lower_left' in self.used_links:
+            self.used_links.remove('palm_lower_left')
+        print('used_links after removing palm_lower_left:',self.used_links)
+        exit()
     def compute_sdf(self,x,q,return_index = False):
         # x : (Nx,3)
         # q : (Nq,7)
@@ -54,11 +58,11 @@ class DataGenerator():
 
         pose = torch.eye(4).unsqueeze(0).to(self.device).expand(len(q),4,4).float()
         if not return_index:
-            d,_ = self.bp_sdf.get_serial_sdf_batch(x,pose, q,self.model,use_derivative = False,serial_idx=self.serial_idx)
+            d,_ = self.bp_sdf.get_serial_sdf_batch(x,pose, q,self.model,use_derivative = False,serial_idx=self.serial_idx,used_links=self.used_links)
             d = d.min(dim=1)[0]
             return d
         else:
-            d,_,idx = self.bp_sdf.get_serial_sdf_batch(x,pose, q,self.model,use_derivative = False,serial_idx=self.serial_idx,return_index=True)
+            d,_,idx = self.bp_sdf.get_serial_sdf_batch(x,pose, q,self.model,use_derivative = False,serial_idx=self.serial_idx,return_index=True,used_links=self.used_links)
             # d: (Nq,Nx)
             # idx: (Nq,Nx)
             d,pts_idx = d.min(dim=1)
@@ -70,6 +74,8 @@ class DataGenerator():
         # scale x to workspace
         if not batchsize:
             batchsize = self.batchsize
+        if serial_idx is None:
+            serial_idx = self.serial_idx
         serial = self.robot.serials[serial_idx]
         q_min = serial.theta_min_soft
         q_max = serial.theta_max_soft
@@ -199,10 +205,11 @@ if __name__ == "__main__":
         'data': os.path.join(CUR_DIR,f'data/{args.robot}/data.pt'),
     }
     parallel_robot = ParallelRobotLayer(device=device,robot=robot,paths=paths)
-    gen = DataGenerator(device,parallel_robot,paths)
     for i, serial_robot in enumerate(parallel_robot.serials):
     # x = torch.tensor([[0.5,0.5,0.5]]).to(device)
     # gen.single_point_generation(x)
-        gen.serial_idx = i
+        if i!=3:
+            continue
+        gen = DataGenerator(device,parallel_robot,paths,serial_idx=i)
         print(f'Generating data for serial robot {i}, ee_link: {serial_robot.all_links}')
         gen.generate_offline_data(serial_idx=i)
