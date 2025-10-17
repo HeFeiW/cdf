@@ -7,9 +7,9 @@ import torch
 CUR_DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(CUR_DIR+'/../../RDF')
 from panda_layer.parallel_robot_layer import ParallelRobotLayer
-DATA_PATH = CUR_DIR + '/data/leaphand/'+'data_thumb_no_base.npy'
+DATA_PATH = CUR_DIR + '/data/leaphand/'+'data_thumb_good_fingertip.npy'
 data = np.load(DATA_PATH,allow_pickle=True).item()
-data_with_base = np.load(CUR_DIR + '/data/leaphand/'+'/data_thumb.npy',allow_pickle=True).item()
+# data_with_base = np.load(CUR_DIR + '/data/leaphand/'+'/data_thumb.npy',allow_pickle=True).item()
 # scene = trimesh.Scene()
 workspace = [[np.inf, -np.inf],[np.inf, -np.inf],[np.inf, -np.inf]]
 cnt=0
@@ -39,14 +39,14 @@ trans = robot.get_link_mesh_transformations(pose, theta)
 scene = trimesh.Scene()
 for k,v in data.items():
     x=torch.from_numpy(v['x']).float().to(device).unsqueeze(0)
-    x_with_base = torch.from_numpy(data_with_base[k]['x']).float().to(device).unsqueeze(0)
+    # x_with_base = torch.from_numpy(data_with_base[k]['x']).float().to(device).unsqueeze(0)
     for i in range(3):
         workspace[i][0] = min(workspace[i][0],x[0][i])
         workspace[i][1] = max(workspace[i][1],x[0][i])
     idx = torch.from_numpy(v['idx'])
     q = torch.from_numpy(v['q']).float()
     n = len(idx)
-    n_with_base = len(data_with_base[k]['idx'])
+    # n_with_base = len(data_with_base[k]['idx'])
     # x2 = torch.matmul(mcp_to_mcp2, torch.cat([x,torch.ones(1,1).to(device)],dim=1).transpose(0,1))[:3,:].transpose(0,1)
     # x3 = torch.matmul(mcp_to_mcp3, torch.cat([x,torch.ones(1,1).to(device)],dim=1).transpose(0,1))[:3,:].transpose(0,1)
     # data2[k]['x'] = x2[0].cpu().numpy()
@@ -69,23 +69,23 @@ for k,v in data.items():
         # if idx_count[0]>0:
         #     print(f'warning: idx 0 exists, count: {idx_count[0]}')
         # 画出点云
-        # x = x.cpu().numpy()
+        x = x.cpu().numpy()
         
         # x2 = x2.cpu().numpy()
         # x3 = x3.cpu().numpy()
         # print(x,x2,x3)
-        # pcd1 = trimesh.points.PointCloud(x,colors=[255,0,0,100])
+        pcd1 = trimesh.points.PointCloud(x,colors=[255,0,0,100])
         
         # pcd2 = trimesh.points.PointCloud(x2,colors=[0,0,255,255])
         # pcd3 = trimesh.points.PointCloud(x3,colors=[255,0,0,255])
-        # scene.add_geometry(pcd1)
+        scene.add_geometry(pcd1)
         
         # scene.add_geometry(pcd2)
         # scene.add_geometry(pcd3)
-    if n_with_base>0:
-        idx_count_with_base = torch.bincount(torch.from_numpy(data_with_base[k]['idx']))
-        if idx_count_with_base[0]>0:
-            print(idx_count_with_base,'with base')
+    # if n_with_base>0:
+    #     idx_count_with_base = torch.bincount(torch.from_numpy(data_with_base[k]['idx']))
+    #     if idx_count_with_base[0]>0:
+    #         print(idx_count_with_base,'with base')
         # x_with_base = x_with_base.cpu().numpy()
         # pcd1_with_base = trimesh.points.PointCloud(x_with_base,colors=[0,0,255,100])
         # scene.add_geometry(pcd1_with_base)

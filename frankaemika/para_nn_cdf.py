@@ -35,12 +35,14 @@ class CDF:
         self.batch_q = 100
         self.max_q_per_link = 100
         self.paths = paths
-        # panda robot
+        # --- initialize robot model ---
         self.robot = ParallelRobotLayer(device=device,paths=paths,robot=robot)
         self.serial_idx = serial_idx
+        
         # uncomment these lines to process the generated data and train your own CDF
         # self.raw_data = np.load(paths['raw_data'],allow_pickle=True).item()
         # self.process_data(self.raw_data)
+        
         self.data_path = paths['data']
         self.data = self.load_data(self.data_path)
         self.len_data = len(self.data['k'])
@@ -100,6 +102,11 @@ class CDF:
             # (first "DoF" stands for index of the q sample,
             # and second "DoF" stands for the link index,
             # i.e. to get all sample for link i, use q_lib[:,:,i-1])
+            if torch.isinf(q_lib).all():
+                print(f'Warning: all inf in key {k}, remove this key')
+                print('corresponding x:',data[k]['x'])
+                data.pop(k)
+                continue
             processed_data[k] = {
                 'x':torch.from_numpy(data[k]['x']).float().to(self.device),
                 'q':q_lib,
@@ -138,8 +145,7 @@ class CDF:
         # d:(batch_x,batch_q)
         
         x = self.data['x']
-        q = self.data['q']
-
+        q = self.data['q'] # q: (len(data),max_q_per_link,DoF,DoF)
         idx = torch.randint(0,len(x),(self.batch_x,)) 
         # idx = torch.tensor([4000])
         x_batch,q_lib = x[idx],q[idx]
@@ -256,6 +262,8 @@ class CDF:
                 # q_batch:(batch_q,DoF)
                 # d:(batch_x,batch_q)
                 # grad:(batch_x,batch_q,DoF)
+                # x_batch are sampled from the data, thus must be in the workspace
+                # so d should not be inf
                 x_inputs = x_batch.unsqueeze(1).expand(-1,self.batch_q,-1).reshape(-1,3)
                 q_inputs = q_batch.unsqueeze(0).expand(self.batch_x,-1,-1).reshape(-1,DoF)
 
@@ -426,47 +434,7 @@ class CDF:
             robot_mesh1.visual.face_colors = [0,0,255,100]
             scene.add_geometry(robot_mesh1)
             scene.show()
-    def sample_without_fps(self,data):
-        DoF = self.robot.serials[self.serial_idx].dof
-        keys = list(data.keys())  # Create a copy of the keys
-        processed_data = {}
-        print('data_shape:',{k:data[k]['q'].shape for k in keys})
-
-        for k in keys:
-            if len(data[k]['q']) == 0:
-                data.pop(k)
-                continue
-            q = torch.from_numpy(data[k]['q']).float().to(self.device)
-            q_idx = torch.from_numpy(data[k]['idx']).float().to(self.device)
-            # q_idx[q_idx==7] = 6
-            # q_idx[q_idx==8] = 7
-            q_lib = torch.inf*torch.ones(self.max_q_per_link,DoF,DoF).to(self.device)
-            for i in range(1,8):
-                mask = (q_idx==i)
-                if len(q[mask])>self.max_q_per_link:
-                    # 不用sample_farthest_points，而是随机采样
-                    sampled_q = q[mask][torch.randperm(len(q[mask]))[:self.max_q_per_link]]
-                    # print(f'sampled_q:{sampled_q.shape}')
-                    # fps_q = pytorch3d.ops.sample_farthest_points(q[mask].unsqueeze(0),K=self.max_q_per_link)[0]
-                    fps_q = sampled_q.unsqueeze(0)
-                    q_lib[:,:,i-1] = fps_q.squeeze()
-                    # print(q_lib[:,:,i]) 
-                elif len(q[mask])>0:
-                    q_lib[:len(q[mask]),:,i-1] = q[mask]
-
-            processed_data[k] = {
-                'x':torch.from_numpy(data[k]['x']).float().to(self.device),
-                'q':q_lib,
-            }
-        final_data = {
-            'x': torch.cat([processed_data[k]['x'].unsqueeze(0) for k in processed_data.keys()],dim=0),
-            'q': torch.cat([processed_data[k]['q'].unsqueeze(0) for k in processed_data.keys()],dim=0),
-            'k':torch.tensor([k for k in processed_data.keys()]).to(self.device)
-        }
-        print('final_data:',final_data['x'].shape,final_data['q'].shape,final_data['k'].shape)
-        torch.save(final_data,os.path.join(CUR_PATH,'data.pt'))
-        return data
-        
+   
     def eval_model(self,model,joint_idx,q_probe):
 
         # model
@@ -767,8 +735,8 @@ class CDF:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Panda CDF Model Training and Evaluation')
-    parser.add_argument('--data_path', type=str, default='data_thumb.pt', help='Path to the data file')
-    parser.add_argument('--raw', type=str, default='data_thumb.npy', help='Path to the raw data file')
+    parser.add_argument('--data_path', type=str, default='data_thumb_good_fingertip.pt', help='Path to the data file')
+    parser.add_argument('--raw', type=str, default='data_thumb_good_fingertip.npy', help='Path to the raw data file')
     parser.add_argument('--with_writer', action='store_true', help='Whether to use TensorBoard writer')
     parser.add_argument('--eval', action='store_true', help='Whether to evaluate the model')
     parser.add_argument('--train', action='store_true', help='Whether to train the model')
@@ -778,7 +746,7 @@ if __name__ == "__main__":
     parser.add_argument('--signed_distance', action='store_true', help='Whether to use signed distance')
     parser.add_argument('--max_q_per_link', type=int, default=100, help='Maximum number of q samples per link')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use for training/evaluation')
-    parser.add_argument('--model_dict', type=str, default='thumb_no_base.pt', help='Path to save/load the model dictionary')
+    parser.add_argument('--model_dict', type=str, default='thumb_good_fingertip.pt', help='Path to save/load the model dictionary')
     parser.add_argument('--robot', type=str, default='panda', help='Robot type (e.g., panda)',choices=['panda','dexhand','leaphand'])
     parser.add_argument('--serial_idx', type=int, default=0, help='Serial index for different runs')
     args = parser.parse_args()
@@ -826,6 +794,7 @@ if __name__ == "__main__":
         cdf = CDF(device,paths=paths,robot=args.robot,writer=writer,signed_distance=args.signed_distance,serial_idx=args.serial_idx)
     else:
         cdf = CDF(device,paths=paths,robot=args.robot,writer=None,signed_distance=args.signed_distance,serial_idx=args.serial_idx)
+    print(cdf.robot.serials[cdf.serial_idx].all_links)
     if args.train:
         cdf.train_nn(epoches=hprams['epoches'])
     if args.eval:

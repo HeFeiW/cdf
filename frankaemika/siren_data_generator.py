@@ -16,6 +16,7 @@ from panda_layer.robot_layer import RobotLayer
 from panda_layer.parallel_robot_layer import ParallelRobotLayer
 from panda_layer.serial_robot_layer import SerialRobotLayer
 from parallel_bf_sdf import ParallelBPSDF
+from siren_sdf import Siren, SirenSDF
 from torchmin import minimize
 import argparse
 import time
@@ -24,20 +25,18 @@ import copy
 PI = math.pi
 
 class DataGenerator():
-    def __init__(self,device,robot,paths,serial_idx = None):
+    def __init__(self,device,robot,paths,model_dict,serial_idx = None):
         # panda model
         self.robot = robot
         self.paths = paths
         self.bp_sdf_model_path = paths['model']
-        self.bp_sdf = ParallelBPSDF(8,-1.0,1.0,self.robot,self.bp_sdf_model_path,device)
-        self.model = torch.load(self.bp_sdf_model_path)
+        # self.sdf_model = ParallelBPSDF(8,-1.0,1.0,self.robot,self.bp_sdf_model_path,device)
+        self.sdf_model = SirenSDF(robot=robot,paths=paths,device=device)
+        self.model = model_dict
         # device
         self.device = device
         self.serial_idx = serial_idx
         # data generation
-        # workspace大小：1m x 1m x 1m
-        # 20 x 20 x 20 = 8000个点
-        # 相当于每个grid是 5cm x 5cm x 5cm
         self.workspace = self.robot.space_limits.cpu().numpy()
         self.n_disrete = 20         # total number of x: n_discrete**3
         self.batchsize = 20000       # batch size of q
@@ -57,11 +56,11 @@ class DataGenerator():
 
         pose = torch.eye(4).unsqueeze(0).to(self.device).expand(len(q),4,4).float()
         if not return_index:
-            d,_ = self.bp_sdf.get_serial_sdf_batch(x,pose, q,self.model,use_derivative = False,serial_idx=self.serial_idx,used_links=self.used_links)
+            d,_ = self.sdf_model.get_serial_sdf_batch(x,pose, q,self.model,use_derivative = False,serial_idx=self.serial_idx,used_links=self.used_links)
             d = d.min(dim=1)[0]
             return d
         else:
-            d,_,idx = self.bp_sdf.get_serial_sdf_batch(x,pose, q,self.model,use_derivative = False,serial_idx=self.serial_idx,return_index=True,used_links=self.used_links)
+            d,_,idx = self.sdf_model.get_serial_sdf_batch(x,pose, q,self.model,use_derivative = False,serial_idx=self.serial_idx,return_index=True,used_links=self.used_links)
             # d: (Nq,Nx)
             # idx: (Nq,Nx)
             d,pts_idx = d.min(dim=1)
@@ -200,15 +199,31 @@ if __name__ == "__main__":
         'urdf': os.path.join(CUR_DIR,f'../../RDF/descriptions/{args.robot}/*.urdf'),
         'meshes': os.path.join(CUR_DIR,f'../../RDF/descriptions/{args.robot}/meshes/*.stl'),
         'points': os.path.join(CUR_DIR,f'../../RDF/data/{args.robot}/sdf_points/'),
-        'model':os.path.join(CUR_DIR, f'../../RDF/models/{args.robot}/BP_8.pt'),
+        # 'model':os.path.join(CUR_DIR, f'../../RDF/models/{args.robot}/BP_8.pt'),
+        'model': '/workspace/RDF/siren_model.pth',
         'data': os.path.join(CUR_DIR,f'data/{args.robot}/data.pt'),
     }
     parallel_robot = ParallelRobotLayer(device=device,robot=robot,paths=paths)
+    model = Siren(in_features=3, out_features=1, hidden_features=256, 
+                  hidden_layers=3, outermost_linear=True)
     for i, serial_robot in enumerate(parallel_robot.serials):
-    # x = torch.tensor([[0.5,0.5,0.5]]).to(device)
-    # gen.single_point_generation(x)
         if i!=3:
             continue
-        gen = DataGenerator(device,parallel_robot,paths,serial_idx=i)
+        model_dict = {}
+        used_links = serial_robot.all_links.copy()
+        if 'palm_lower_left' in used_links:
+            used_links.remove('palm_lower_left')
+        print('used_links:',used_links)
+        for link in used_links:
+            mesh_name = serial_robot.Link2Mesh[link]
+            if mesh_name is not None:
+                model = Siren(in_features=3, out_features=1, hidden_features=256, 
+                  hidden_layers=3, outermost_linear=True)
+                model.load_state_dict(torch.load(paths['model'],map_location=device)[mesh_name]['weights'])
+                model.to(device)
+                model.eval()
+                model_dict[link] = model
+        
+        gen = DataGenerator(device,parallel_robot,paths,model_dict=model_dict,serial_idx=i)
         print(f'Generating data for serial robot {i}, ee_link: {serial_robot.all_links}')
         gen.generate_offline_data(serial_idx=i)

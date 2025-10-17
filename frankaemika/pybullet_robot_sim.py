@@ -34,7 +34,6 @@ class PandaSim():
 
         self.panda = self.bullet_client.loadURDF(URDF_PATH, self.base_pos,
                                                  self.base_rot, useFixedBase=True, flags=flags)
-        print("panda=", self.panda)
         self.reset()
         self.t = 0.
         # --- construct Joint2Idx ----
@@ -48,8 +47,13 @@ class PandaSim():
                 self.Joint2Idx[jointName] = (control_idx,i)
                 control_idx += 1
         self.dof = control_idx
-        print("Joint2Idx=", self.Joint2Idx)
-        # self.set_joint_positions(rp)
+        # --- construct Link2Idx ----
+        self.Link2Idx = {}
+        for i in range(self.bullet_client.getNumJoints(self.panda)):
+            info = self.bullet_client.getJointInfo(self.panda, i)
+            linkName = info[12].decode('UTF-8')
+            if linkName not in self.Link2Idx:
+                self.Link2Idx[linkName] = i        
 
     def reset(self):
         index = 0
@@ -58,7 +62,6 @@ class PandaSim():
             info = self.bullet_client.getJointInfo(self.panda, j)
             jointName = info[1]
             jointType = info[2]
-            print("jointName=", jointName, "jointType=", jointType, "index=", index)
             if (jointType == self.bullet_client.JOINT_PRISMATIC):
                 self.bullet_client.resetJointState(self.panda, j, self.rp[index])
                 index = index + 1
