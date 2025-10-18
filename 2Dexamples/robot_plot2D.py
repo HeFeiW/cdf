@@ -282,8 +282,11 @@ if __name__ == "__main__":
     x_t = np.array([0.5,1.1])
 
     from matplotlib import patches
-    from args import get_args
-    args = get_args()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--center', type=float, nargs='+', default=[(2,2),(3,1.5)])
+    parser.add_argument('--radius', type=float, default=0.3)
+    args = parser.parse_args()
     for j in range(len(args.center)):
         circle = patches.Circle(args.center[j], args.radius, linewidth=2, edgecolor='black', facecolor='none')                                                                
         plt.gca().add_patch(circle)

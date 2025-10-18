@@ -23,47 +23,61 @@ import matplotlib.gridspec as gridspec
 
 PI = math.pi
 CUR_PATH = os.path.dirname(os.path.realpath(__file__))
+DATA_PATH = os.path.join(CUR_PATH,'data2D_tree.npy')
 
 class CDF2D:
     def __init__(self,device) -> None:
         self.device = device    
         self.nbData =  50
         self.nbDiscretization = 50
-        self.Q_grid = self.create_grid_torch(self.nbData).to(device)
-        self.link_length = torch.tensor([[2,2]]).float().to(device)
+        
+        self.link_length = torch.tensor([[2, 2, 1, 1]]).float().to(device)
+        self.link_parent_map = {
+            1: 0,  # Link 1 connects to the base
+            2: 1,  # Link 2 connects to Link 1
+            3: 2,  # Link 3 connects to Link 2
+            4: 2   # Link 4 connects to Link 2
+        }
         self.num_joints = self.link_length.size(1)
-        self.q_max = torch.tensor([PI,PI]).to(device)
-        self.q_min = torch.tensor([-PI,-PI]).to(device)
+        self.q_max = torch.tensor([PI]).expand(self.num_joints).to(device)
+        self.q_min = torch.tensor([-PI]).expand(self.num_joints).to(device)
+        self.Q_grid = self.create_grid_torch(self.nbData).to(device)
 
         # data generation
-        self.task_space = [[-3.0,-3.0],[3.0,3.0]]
+        self.task_space = [[-4.0,-4.0],[4.0,4.0]]
         self.batchsize = 40000       # batch size of q
         self.epsilon = 1e-3         # distance threshold to filter data
 
         # robot
-        self.robot = Robot2D(num_joints=self.num_joints ,init_states = self.Q_grid,link_length=self.link_length,device = device)
-
+        # self.robot = Robot2D(num_joints=self.num_joints ,init_states = self.Q_grid,link_length=self.link_length,device = device)
+        self.robot = Robot2D(num_links=len(self.link_length[0]),init_states = self.Q_grid,link_lengths=self.link_length,device = device, link_parent_map=self.link_parent_map)
         # c space distance field
-        if not os.path.exists(os.path.join(CUR_PATH,'data2D.pt')):
+        save_path = DATA_PATH.replace('.npy','.pt')
+        if not os.path.exists(save_path):
             self.generate_data()
-        self.q_grid_template =  torch.load(os.path.join(CUR_PATH,'data2D.pt'))
+        self.q_grid_template =  torch.load(save_path)
 
-    def create_grid(self,nb_data):
-        # 创建一个网格，范围从-π到π
-        # 数据格式：
-        # q0:nb_data x nb_data 个点的横坐标
-        # q1:nb_data x nb_data 个点的纵坐标
-        t = np.linspace(-math.pi,math.pi, nb_data)
-        self.q0,self.q1 = np.meshgrid(t,t)
-        return self.q0,self.q1
+    # def create_grid(self,nb_data):
+    #     # 创建一个网格，范围从-π到π
+    #     # 数据格式：
+    #     # q0:nb_data x nb_data 个点的横坐标
+    #     # q1:nb_data x nb_data 个点的纵坐标
+    #     t = np.linspace(-math.pi,math.pi, nb_data)
+    #     self.q0,self.q1 = np.meshgrid(t,t)
+    #     return self.q0,self.q1
+    def create_grid_dof(self,nb_data,dof):
+        # 把create_grid的numpy版本改成dof维度
+        q_list = []
+        t = np.linspace(self.q_min.cpu().numpy(),self.q_max.cpu().numpy(), nb_data)
+        for i in range(dof):
+            q_list.append(t[i])
+        mesh = np.meshgrid(*q_list)
+        Q_sets = np.stack(mesh,axis=-1).reshape(-1,dof)
+        return Q_sets
     
     def create_grid_torch(self,nb_data):
         # 把create_grid的numpy版本改成torch版本
-        q0,q1 = self.create_grid(nb_data)
-        q0_torch = torch.from_numpy(q0).float()
-        q1_torch = torch.from_numpy(q1).float()
-        Q_sets = torch.cat([q0_torch.unsqueeze(-1),q1_torch.unsqueeze(-1)],dim=-1).view(-1,2)
-        return Q_sets
+        return torch.from_numpy(self.create_grid_dof(nb_data,self.num_joints)).float()
 
     def inference_sdf(self,q,obj_lists,return_grad = False): 
         # 返回每个输入的q到所有障碍物总体的最小signed distance
@@ -78,7 +92,6 @@ class CDF2D:
         # using closest point from robot surface
         sdf = torch.min(dist,dim=-1)[0]
         sdf = sdf.min(dim=-1)[0]
-        print('shape of sdf: ',sdf.shape)
         if return_grad: 
             grad = torch.autograd.grad(sdf,q,torch.ones_like(sdf))[0]
             return sdf,grad
@@ -103,7 +116,8 @@ class CDF2D:
         
         t0 = time.time()
         # optimizer for data generation
-        q = torch.rand(batchsize,2).to(self.device)*(self.q_max-self.q_min)+self.q_min
+        dof = self.q_min.size(0)
+        q = torch.rand(batchsize,dof).to(self.device)*(self.q_max-self.q_min)+self.q_min
         q0 =copy.deepcopy(q)
         res = minimize(
             cost_function, 
@@ -134,7 +148,7 @@ class CDF2D:
         # 以nbDiscretization为一维上的网格采样数，
         # 在task_space内均匀采样nbDiscretization*nbDiscretization个点
         # 对每个采样点，计算其对应的q（很大计算量！），
-        # 并将其存储在data2D.npy中。
+        # 并将其存储在DATA_PATH中。
         # 格式：字典{
         #     'p': 采样点坐标，
         #     'q': 对应的q坐标
@@ -157,49 +171,11 @@ class CDF2D:
                 print('no q found for p: {}'.format(_p))
             else:
                 print('i: {} \t number of q: {}'.format(i,len(q)))
-        # _p=torch.tensor([-1.0,-1.0]).to(self.device)
-        # i= 0
-        # grids = [Circle(center=torch.tensor(_p),radius=0.001,device=self.device)]
-        # q = self.find_q(grids)[1]
-        # data[0] = {
-        #     'p': _p,
-        #     'q': q
-        # }
-        # print(q)
-        # # 在一张图上画出所有的q点，并以颜色区分，
-        # # 在另一张图上画出采样点p，和每个q点对应的机器人状态，并用颜色对应
-        # # 将图像保存到本地
-        # q = q.detach().cpu().numpy()
-        # robot_plot2D.plot_2d_manipulators(joint_angles_batch=q,show_start_end=False,show_eef_traj=True)
-        # plt.title('Robot Manipulator for p: {}'.format(_p.cpu().numpy()))
-        # plt.xlabel('x')
-        # plt.ylabel('y')
-        # plt.xlim(-3.0, 3.0)
-        # plt.ylim(-3.0, 3.0)
-        # plt.gca().set_aspect('equal', adjustable='box')  # Make sure the pixels are square
-        # plt.grid()
-        # plt.scatter(_p[0].cpu().numpy(), _p[1].cpu().numpy(), color='red', label='Sample Point')
-        # plt.legend()
-        # plt.savefig(os.path.join(CUR_PATH,'robot_for_p_{}.png'.format(i)))
-        # # plt.show()
-        # plt.clf()
-        # plt.scatter(q[:,0], q[:,1], color='blue', label='q Points')
-        # plt.title('q Points for p: {}'.format(_p.cpu().numpy()))
-        # plt.xlabel('q1')
-        # plt.ylabel('q2')
-        # plt.xlim(-PI, PI)
-        # plt.ylim(-PI, PI)
-        # plt.gca().set_aspect('equal', adjustable='box')  # Make sure the pixels are square
-        # plt.grid()
-        # plt.scatter(_p[0].cpu().numpy(), _p[1].cpu().numpy(), color='red', label='Sample Point')
-        # plt.legend()
-        # plt.savefig(os.path.join(CUR_PATH,'q_points_for_p_{}.png'.format(i)))
-        # # plt.show() 
 
-        np.save(os.path.join(CUR_PATH,'data2D.npy'),data)
-        data = np.load(os.path.join(CUR_PATH,'data2D.npy'),allow_pickle=True).item()
+        np.save(DATA_PATH,data)
+        data = np.load(DATA_PATH,allow_pickle=True).item()
         max_q_per_x = 200
-        tensor_data = torch.inf*torch.ones(self.nbData,self.nbData,max_q_per_x,2).to(self.device)
+        tensor_data = torch.inf*torch.ones(self.nbData,self.nbData,max_q_per_x,self.robot.num_links).to(self.device)
         for idx in data.keys():
             p = data[idx]['p']
             q = data[idx]['q']
@@ -208,7 +184,8 @@ class CDF2D:
             if len(q) > max_q_per_x:
                 q = q[:max_q_per_x]
             tensor_data[int(i),int(j),:len(q),:] = q
-        torch.save(tensor_data,os.path.join(CUR_PATH,'data2D.pt'))
+        save_path = DATA_PATH.replace('.npy','.pt')
+        torch.save(tensor_data,save_path)
         return tensor_data
 
     def calculate_cdf(self,q,obj_lists,method='online_computation',return_grad = False):
@@ -505,6 +482,10 @@ if __name__ == "__main__":
                         Circle(center=torch.tensor([0.0, 1.0]),radius=0.01,attract=True,device=device)]
     # a,b,c= cdf.find_q(scene_1,2)
     # print('number of q in scene_1: ',len(b))
+    plt.figure(figsize=(10,8))
+    ax = plt.gca()
+    cdf.plot_sdf(ax=ax,obj_lists=scene_3)
+    plt.show()
     # # # plot the figure in the paper
     plot_fig1(scene_3)
 

@@ -16,6 +16,7 @@ from parallel_bf_sdf import ParallelBPSDF
 from qsdf import QSDF
 from parallel_robot_layer import ParallelRobotLayer
 from para_nn_cdf import CDF
+from pybullet_utils import load_sdf_model, sample_points_from_obj
 
 import time
 from pybullet_robot_sim import PandaSim, SphereManager
@@ -58,27 +59,28 @@ def plt_contact_map(contact_points, obj, robot,p):
     ax.set_title('Contact Points between Robot and Object')
     ax.legend()
     plt.show()
-def sample_points_from_box(obj_id, num_samples=100):
-    """Sample points on the surface of the object."""
-    position, orientation = p.getBasePositionAndOrientation(obj_id)
-    half_extents = np.array(p.getVisualShapeData(obj_id)[0][3])  # Get half extents from visual shape data
-    points = []
-    for _ in range(num_samples):
-        x = np.random.uniform(-half_extents[0], half_extents[0])
-        y = np.random.uniform(-half_extents[1], half_extents[1])
-        z = np.random.uniform(-half_extents[2], half_extents[2])
-    #    Transform the point to the object's local space and orient it
-        point = np.array([x, y, z])
-        point = np.dot(np.array(p.getMatrixFromQuaternion(orientation)).reshape(-1, 3), point) + np.array(position)
-        points.append(point)
-    # Convert to numpy array
-    return np.array(points)
+# def sample_points_from_box(obj_id, num_samples=100):
+#     """Sample points on the surface of the object."""
+#     position, orientation = p.getBasePositionAndOrientation(obj_id)
+#     half_extents = np.array(p.getVisualShapeData(obj_id)[0][3])  # Get half extents from visual shape data
+#     points = []
+#     for _ in range(num_samples):
+#         x = np.random.uniform(-half_extents[0], half_extents[0])
+#         y = np.random.uniform(-half_extents[1], half_extents[1])
+#         z = np.random.uniform(-half_extents[2], half_extents[2])
+#     #    Transform the point to the object's local space and orient it
+#         point = np.array([x, y, z])
+#         point = np.dot(np.array(p.getMatrixFromQuaternion(orientation)).reshape(-1, 3), point) + np.array(position)
+#         points.append(point)
+#     # Convert to numpy array
+#     return np.array(points)
+
 def main_loop():
     # 处理命令行参数
     parser = argparse.ArgumentParser(description='Franka Panda CDF Example')
     parser.add_argument('--step_size', type=float, default=1, help='Step size for moving on the zero-level set')
     parser.add_argument('--display_mode', type=str, default='GUI', choices=['GUI', 'DIRECT'], help='Display mode: GUI or DIRECT')
-    parser.add_argument('--robot', type=str, default='panda', help='Robot name (default: panda)')
+    parser.add_argument('--robot', type=str, default='leaphand', help='Robot name (default: leaphand)')
     parser.add_argument('--model_dict', type=str, default='finger_no_base.pt', help='Path to save/load the model dictionary')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use (default: cuda)')
     parser.add_argument('--data_path', type=str, default='data_finger_no_base.pt', help='Sub-directory in data/ to save the results (default: test)')
@@ -202,21 +204,39 @@ def main_loop():
     #                                     basePosition=box_center)
 
     # ------------- load a object to grasp -----------
-    obj_size = np.array([0.02,0.02,0.02])
-    obj_center = np.array([-0.10, -0.1, 0.42])
-    obj_orientation = [0, 0, 0, 1]  # No rotation
+    obj_to_grasp = 'mug'  # 'sphere' or 'mug'
+    # ----- sphere -----
+    if obj_to_grasp == 'sphere':
+        obj_size = np.array([0.02,0.02,0.02])
+        obj_center = np.array([-0.10, -0.1, 0.42])
+        obj_orientation = [0, 0, 0, 1]  # No rotation
+        # sphere
+        obj_visual = p.createVisualShape(p.GEOM_SPHERE, radius=0.06, rgbaColor=[0.8500, 0.3250, 0.0980, 1.0])
+        obj_collision = p.createCollisionShape(p.GEOM_SPHERE, radius=0.06)
+        # set baseMass=0 to make the object static
+        obj = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=obj_collision, baseVisualShapeIndex=obj_visual, basePosition=obj_center)
+        p.changeDynamics(obj, -1, lateralFriction=0.5, spinningFriction=0.1, rollingFriction=0.1)
+    # ----- mug -----
+    elif obj_to_grasp == 'mug':
+        sdf_path = "/workspace/cdf/Threshold_Porcelain_Coffee_Mug_All_Over_Bead_White/model.sdf"
+        base_position = [0, 0, 0.5]
+        base_orientation = p.getQuaternionFromEuler([0, 0, 0])
+        obj = load_sdf_model(sdf_path, base_position, base_orientation)
+        print(f"Loaded object ID: {obj}")
+        # 设置物体的位置和朝向
+        obj_center = np.array([-0.10, 0, 0.4])
+        obj_orientation = p.getQuaternionFromEuler([np.pi/2, np.pi/2, 0])  # 无旋转
+        p.resetBasePositionAndOrientation(obj, obj_center, obj_orientation)
+        p.changeDynamics(obj, -1, lateralFriction=0.5, spinningFriction=0.1, rollingFriction=0.1)
+    
     # box
     # obj_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=obj_size, rgbaColor=[0.8500, 0.3250, 0.0980, 1.0])
     # obj_collision = p.createCollisionShape(p.GEOM_BOX, halfExtents=obj_size)
-    # sphere
-    obj_visual = p.createVisualShape(p.GEOM_SPHERE, radius=0.06, rgbaColor=[0.8500, 0.3250, 0.0980, 1.0])
-    obj_collision = p.createCollisionShape(p.GEOM_SPHERE, radius=0.06)
+    
     # cylinder
     # obj_visual = p.createVisualShape(p.GEOM_CYLINDER, radius=0.02, length=0.02, rgbaColor=[0.8500, 0.3250, 0.0980, 1.0])
     # obj_collision = p.createCollisionShape(p.GEOM_CYLINDER, radius=0.02, height=0.02)
-    # set baseMass=0 to make the object static
-    obj = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=obj_collision, baseVisualShapeIndex=obj_visual, basePosition=obj_center)
-    p.changeDynamics(obj, -1, lateralFriction=0.5, spinningFriction=0.1, rollingFriction=0.1)
+    
     
     # --- initialize the task space  ---
     task_space = np.array([[-0.5, 0.5], # x-axis
@@ -238,19 +258,9 @@ def main_loop():
         for _ in range(300):
             robot.set_joint_positions(q0)
             p.stepSimulation()
-        # ---- initialize the object position and orientation ----
-        # obj_center = np.random.rand(3) * (task_space[:, 1] - task_space[:, 0]) + task_space[:, 0]
-        # obj_center = np.array([0.0, 0.0, 0.0])
-        # obj_center[2] = task_space[2, 0] + obj_size[2] / 2.0 + 0.1  # Ensure the object is above the ground
-        # obj_orientation_Euler = np.random.rand(3) * np.pi * 2.0 - np.pi
-        # obj_orientation = p.getQuaternionFromEuler(obj_orientation_Euler)
         p.resetBasePositionAndOrientation(obj, obj_center, obj_orientation)
         p.resetBaseVelocity(obj, linearVelocity=[0, 0, 0], angularVelocity=[0, 0, 0])
-        # while(True):
-        #         keys = p.getKeyboardEvents()
-        #         if p.B3G_SPACE in keys and keys[p.B3G_SPACE] & p.KEY_WAS_TRIGGERED:
-        #             print('space key pressed')
-        #             break
+
         q = q_init
         while(True):
             # print(f'joint positions:{robot.get_joint_positions()}')
@@ -259,7 +269,7 @@ def main_loop():
             print('')
             position, orientation = p.getBasePositionAndOrientation(obj)
             # --- debug: for clarity, sample one point only ---
-            x = sample_points_from_box(obj, num_samples=100)
+            x = sample_points_from_obj(obj, num_samples=100)
             x = torch.from_numpy(np.array(x)).to(device).float()
             # 获得robot base link的位置
             robot_base_pos, robot_base_orn = p.getBasePositionAndOrientation(robot.panda)
@@ -267,17 +277,11 @@ def main_loop():
             x_in_robot_frame = (torch.matmul(matrix.T, (x - torch.tensor(robot_base_pos).to(device).float()).T)).T
             q = torch.tensor([robot.get_joint_positions()],requires_grad=True).to(device).float()
             print(f'q:', q)
-            # check if the object is out of the task space
-            # if (position[0] < task_space[0, 0] or position[0] > task_space[0, 1] or
-            #     position[1] < task_space[1, 0] or position[1] > task_space[1, 1] or
-            #     position[2] < task_space[2, 0] or position[2] > task_space[2, 1]):
-            #     print('object out of task space')
-            #     break
-            contac_points = p.getContactPoints(bodyA=robot.panda, bodyB=obj)
+            contact_points = p.getContactPoints(bodyA=robot.panda, bodyB=obj)
             # 获得contact的robot link index
-            contact_links = set([cp[3] for cp in contac_points])
+            contact_links = set([cp[3] for cp in contact_points])
             print(f'contact links: {contact_links}')
-            in_contact = bool(contac_points)
+            in_contact = bool(contact_points)
             # if not in_contact:
             if True:
                 q_next = q.clone()
