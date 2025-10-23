@@ -15,6 +15,7 @@ import os
 import sys
 import time
 import matplotlib.cm as cm
+import argparse
 CUR_PATH = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(os.path.join(CUR_PATH,'../RDF'))
 from mlp import MLPRegression
@@ -118,13 +119,43 @@ def solve_optimization_problem(n_dimensions, x0_2d, xf_2d, cons_u, A, B, distanc
 
 
 def main():
-    # 
+    # debug
+    parser = argparse.ArgumentParser(description='Panda CDF Model Training and Evaluation')
+    parser.add_argument('--data_path', type=str, default='data_thumb_good_fingertip.pt', help='Path to the data file')
+    parser.add_argument('--raw', type=str, default='data_thumb_good_fingertip.npy', help='Path to the raw data file')
+    parser.add_argument('--with_writer', action='store_true', help='Whether to use TensorBoard writer')
+    parser.add_argument('--eval', action='store_true', help='Whether to evaluate the model')
+    parser.add_argument('--train', action='store_true', help='Whether to train the model')
+    parser.add_argument('--epoches', type=int, default=50000, help='Number of training epochs')
+    parser.add_argument('--batch_x', type=int, default=10, help='Batch size for x')
+    parser.add_argument('--batch_q', type=int, default=100, help='Batch size for q')
+    parser.add_argument('--signed_distance', action='store_true', help='Whether to use signed distance')
+    parser.add_argument('--max_q_per_link', type=int, default=100, help='Maximum number of q samples per link')
+    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use for training/evaluation')
+    parser.add_argument('--model_dict', type=str, default='thumb_good_fingertip.pt', help='Path to save/load the model dictionary')
+    parser.add_argument('--robot', type=str, default='panda', help='Robot type (e.g., panda)',choices=['panda','dexhand','leaphand'])
+    parser.add_argument('--serial_idx', type=int, default=0, help='Serial index for different runs')
+    args = parser.parse_args()
+    print(f'args:{args}')
+    c = input('press enter to continue')
+    CUR_DIR = os.path.dirname(os.path.abspath(__file__))
+    paths = {
+        'urdf': os.path.join(CUR_DIR,f'../../RDF/descriptions/{args.robot}/*.urdf'),
+        'meshes': os.path.join(CUR_DIR,f'../../RDF/descriptions/{args.robot}/meshes/*.stl'),
+        'points': os.path.join(CUR_DIR,f'../../RDF/data/{args.robot}/sdf_points/'),
+        'model':os.path.join(CUR_DIR, f'../../RDF/models/{args.robot}/BP_8.pt'),
+        'data': os.path.join(CUR_DIR,f'data/{args.robot}/{args.data_path}'),
+        'model_dict': os.path.join(CUR_DIR,f'model_dict/{args.robot}/{args.model_dict}'),
+        'raw_data': os.path.join(CUR_DIR,f'data/{args.robot}/{args.raw}'),
+    }
+    # debug end
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # device = torch.device("cpu")
-    cdf = CDF(device)
+    # cdf = CDF(device)
+    cdf = CDF(device,paths=paths,robot='panda',writer=None,signed_distance=False)
     # trainer.train_nn(epoches=20000)
     model = MLPRegression(input_dims=10, output_dims=1, mlp_layers=[1024, 512, 256, 128, 128],skips=[], act_fn=torch.nn.ReLU, nerf=True)
-    # model.load_state_dict(torch.load(os.path.join(CUR_PATH,'model_dict.pt'))[19900])
+    # model.load_state_dict(torch.load(os.path.join(CUR_PATH,'my_model_dict.pt'))[19900])
     model.load_state_dict(torch.load(os.path.join(CUR_PATH,'model_dict.pt'))[49900])
     model.to(device)
 

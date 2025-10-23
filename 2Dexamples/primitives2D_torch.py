@@ -18,7 +18,7 @@ class Circle:
         self.center = center.to(device)
         self.radius = radius
         self.device = device
-        # self.attract = attract
+        self.attract = attract
     def signed_distance(self,p):
         # p: N x 2
         # 对于attract=True的情况，返回距离为正值
@@ -47,11 +47,12 @@ class Circle:
         return circle
 
 class Box:
-    def __init__(self,center,w,h,device='cpu'):
+    def __init__(self,center,w,h,attract = True, device='cpu'):
         self.center = center
         self.w = w
         self.h = h
         self.device = device
+        self.attract = attract
 
     def signed_distance(self,p):
         N = p.size(0)

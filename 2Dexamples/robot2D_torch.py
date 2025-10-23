@@ -30,35 +30,7 @@ class Robot2D:
             self.base_frame = torch.zeros((self.B, 2)).to(self.device)
         else:
             self.base_frame = base_frame.to(self.device)
-        self.link_positions = self.forward_kinematics_all_links(self.init_states)
 
-    # def forward_kinematics_all_links(self, x):
-    #     self.B = x.size(0)
-    #     link_positions = torch.zeros((self.B, 2, self.num_links + 1)).to(self.device)
-    #     print('link_positions', link_positions.shape)
-    #     print('base_frame', self.base_frame.shape)
-    #     link_positions[:, :, 0] = self.base_frame
-    #     # angles stores the cumulative angles for each link
-    #     angles = torch.zeros([self.B, self.num_links]).to(self.device)
-    #     for link_idx in range(1, self.num_links + 1):
-    #         angles[:, link_idx - 1] = x[:, link_idx - 1] if link_idx - 1 < x.size(1) else 0
-    #     angles_copy = angles.clone()
-    #     for link_idx in range(1, self.num_links + 1):
-    #         parent_idx = self.link_parent_map[link_idx]
-    #         while parent_idx != 0:
-    #             angles[:, link_idx - 1] += angles_copy[:, parent_idx - 1]
-    #             parent_idx = self.link_parent_map[parent_idx]
-                
-
-    #     for link_idx in range(1, self.num_links + 1):
-    #         parent_idx = self.link_parent_map[link_idx]
-    #         parent_pos = link_positions[:, :, parent_idx]
-    #         offset = torch.stack([
-    #             self.link_lengths[:, link_idx - 1] * torch.cos(angles[:, link_idx - 1]),
-    #             self.link_lengths[:, link_idx - 1] * torch.sin(angles[:, link_idx - 1])
-    #         ], dim=1)
-    #         link_positions[:, :, link_idx] = parent_pos + offset
-    #     return link_positions
     def forward_kinematics_all_links(self, x):
         self.B = x.size(0)
         L = torch.eye(self.num_links).unsqueeze(0).expand(self.B, -1, -1).to(self.device)
@@ -86,6 +58,7 @@ class Robot2D:
 
     def surface_points_sampler(self,x,n=100):
         # 在机器人每个关节之间采样n个点
+        # 输入x，形状为(B, num_joints),表示机器人每个关节的角度
         # 返回一个张量kpts，形状为(B, 2, n * (num_joints - 1))，其中B是批次大小，2表示二维坐标，n是每个关节之间采样的点数
         # 每个点的坐标是相对于机器人基座的
         self.B = x.size(0)
@@ -115,7 +88,7 @@ class Robot2D:
         dist = torch.norm(kpts-p,dim=-1).min(dim=-1)[0]
         return dist
 
-    def plot_trajectory(self, joint_trajectory, n=100):
+    def plot_trajectory(self, ax, joint_trajectory, n=100):
         """
         Plot the trajectory of the robot given a joint angle trajectory.
 
@@ -134,14 +107,11 @@ class Robot2D:
         all_kpts = np.concatenate(all_kpts, axis=0)  # Combine all time steps
 
         # Plot the trajectory
-        plt.figure()
-        plt.scatter(all_kpts[:, 0], all_kpts[:, 1], s=1, c='blue', label='Trajectory')
-        plt.axis("equal")
-        plt.title("Robot Trajectory")
-        plt.xlabel("X")
-        plt.ylabel("Y")
-        plt.legend()
-        plt.show()
+        ax.scatter(all_kpts[:, 0], all_kpts[:, 1], s=1, c='blue', label='Trajectory')
+        ax.axis("equal")
+        ax.set_title("Robot Trajectory")
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
 
     def interact(self):
         """
@@ -206,18 +176,17 @@ if __name__ == "__main__":
     link_parent_map = {
         1: 0,  # Link 1 connects to the base
         2: 1,  # Link 2 connects to Link 1
-        3: 2,  # Link 3 connects to Link 2
-        4: 2   # Link 4 connects to Link 2
+        3: 1   # Link 3 connects to Link 1
     }
 
     # Initial joint angles for the robot
-    x = torch.tensor([[0.0, -np.pi / 4, np.pi / 4, -np.pi / 6]])
+    x = torch.tensor([[0.0, -np.pi / 4, np.pi / 4]])
 
     # Create the Robot2D instance
     rbt = Robot2D(
-        num_links=4,
+        num_links=3,
         init_states=x,
-        link_lengths=torch.tensor([[2, 2, 1, 1]]).float(),
+        link_lengths=torch.tensor([[2, 2, 2]]).float(),
         link_parent_map=link_parent_map
     )
 

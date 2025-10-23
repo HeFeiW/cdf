@@ -34,11 +34,11 @@ class CDF:
         self.batch_q = 100
         self.max_q_per_link = 100
         # # uncomment these lines to process the generated data and train your own CDF
-        self.raw_data = np.load(paths['raw_data'],allow_pickle=True).item()
-        self.process_data(self.raw_data)
-        self.data_path = paths['data']
-        self.data = self.load_data(self.data_path)
-        self.len_data = len(self.data['k'])
+        # self.raw_data = np.load(paths['raw_data'],allow_pickle=True).item()
+        # self.process_data(self.raw_data)
+        # self.data_path = paths['data']
+        # self.data = self.load_data(self.data_path)
+        # self.len_data = len(self.data['k'])
         self.signed_distance = signed_distance
         # panda robot
         self.robot = RobotLayer(device=device,paths=paths,robot=robot)
