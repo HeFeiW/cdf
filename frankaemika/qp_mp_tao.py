@@ -1,12 +1,5 @@
-# -----------------------------------------------------------------------------
-# SPDX-License-Identifier: MIT
-# This file is part of the CDF project.
-# Copyright (c) 2024 Idiap Research Institute <contact@idiap.ch>
-# Contributor: Yimming Li <yiming.li@idiap.ch>
-# Modified: Support for customizable N-DoF (from 2DoF to higher dimensions)
-# -----------------------------------------------------------------------------
-
-
+# Multi-serial (multi-finger) QP planner utility supporting arbitrary DoF per serial.
+# target points reaching and obstacle avoidance via CDF distance fields.
 import casadi as ca
 import numpy as np
 import matplotlib.pyplot as plt
@@ -42,8 +35,8 @@ def create_system_matrices(n, dt):
         B_d: 控制输入矩阵 (n×n)
     """
     # For a single integrator, A is an identity matrix and B is a dt scaled identity matrix
-    A_d = np.eye(n)
-    B_d = np.eye(n) * dt
+    A_d = torch.eye(n)
+    B_d = torch.eye(n)
     return A_d, B_d
 
 
@@ -60,8 +53,8 @@ class QPPlanner:
         - pts: torch.Tensor of obstacle points, shape (N_pts, 3)
         - xf_full: optional 1D numpy array of target full-robot joint positions
     """
-    def __init__(self, robot_layer, cdf, cdf_models, dt=0.01, cons_u=2.7,
-                 solver='ipopt', safety_buffer=0.3, device=None):
+    def __init__(self, robot_layer, cdf, cdf_models, dt=0.0001, cons_u=2.7,
+                 solver='ipopt', safety_buffer=0.01, device=None):
         self.robot_layer = robot_layer
         self.cdf = cdf
         self.cdf_models = cdf_models
@@ -75,20 +68,19 @@ class QPPlanner:
         self.Bs = []
         for serial in robot_layer.serials:
             A_i, B_i = create_system_matrices(serial.dof, dt)
-            self.As.append(A_i)
-            self.Bs.append(B_i)
+            self.As.append(A_i.to(self.device))
+            self.Bs.append(B_i.to(self.device))
         # Build a list of joint name orders for each serial to map between full q and theta
         # serial_joint_order[i] is a list of joint names in the order used by serial.Joint2Idx.keys()
         self.serial_joint_order = [list(serial.Joint2Idx.keys()) for serial in robot_layer.serials]
 
-    def step(self, q_full, pts, xf_full=None):
+    def step(self, q_full, obs_pts, targ_pts):
         """Run one planning step for the whole hand.
 
         Args:
             q_full: numpy array shape (total_dofs,) current full robot joint positions
-            pts: torch.Tensor shape (N_pts, 3) obstacle points in robot frame
-            xf_full: optional numpy array shape (total_dofs,) of target joint positions; if None,
-                     planner will use zeros for missing targets per serial.
+            obs_pts: torch.Tensor shape (N_pts, 3) obstacle points in robot frame
+            targ_pts: torch.Tensor shape (N_pts, 3) target points in robot frame
 
         Returns:
             q_next_full: tensor shape (total_dofs,) next-step full robot joint positions
@@ -106,29 +98,31 @@ class QPPlanner:
             theta_idxs = [self.robot_layer.Joint2Idx[joint] for joint in joint_order]
             x0_theta = q_full[theta_idxs].astype(np.float32)
 
-            # target for this serial
-            if xf_full is not None:
-                xf_theta = np.asarray(xf_full)[theta_idxs].astype(np.float32)
-            else:
-                xf_theta = np.zeros(dof_i, dtype=np.float32)
-
             # Convert to torch and run CDF inference
             x0_torch = torch.from_numpy(x0_theta).to(self.device).reshape(1, dof_i).float()
             x0_torch.requires_grad = True
 
             # distance_input: torch Tensor (N_pts,) or (N_pts,1); gradient_input: (N_pts, dof_i)
-            distance_torch, gradient_torch = self.cdf.inference_d_wrt_q(pts, x0_torch, self.cdf_models[i], return_grad=True)
-            distance_input = distance_torch.cpu().detach().numpy()
-            gradient_input = gradient_torch.cpu().detach().numpy()
-            # Solve per-serial QP (returns opt_x: shape (dof_i, 2), opt_u: shape (dof_i, 1))
-            opt_x_f, opt_u_f = solve_optimization_problem(dof_i, x0_theta, xf_theta, self.cons_u,
-                                                         self.As[i], self.Bs[i],
-                                                         distance_input, gradient_input,
-                                                         self.dt, self.solver, self.safety_buffer)
+            obs_dist_torch, obs_dist_grad_torch = self.cdf.inference_d_wrt_q(obs_pts, x0_torch, self.cdf_models[i], return_grad=True)
+            targ_dist_torch, targ_dist_grad_torch = self.cdf.inference_d_wrt_q(targ_pts, x0_torch, self.cdf_models[i], return_grad=True)
+            
+            # Solve per-serial QP (returns opt_u: shape (dof_i, 1))
+            opt_u_f = solve_optimization_problem(n_dimensions=dof_i,
+                                                          cons_u=self.cons_u,
+                                                            B=self.Bs[i],
+                                                            targ_dist=targ_dist_torch,
+                                                            targ_dist_grad=targ_dist_grad_torch,
+                                                            obs_dist=obs_dist_torch,
+                                                            obs_dist_grad=obs_dist_grad_torch,
+                                                            dt=self.dt,
+                                                            solver=self.solver,
+                                                            safety_buffer=self.safety_buffer)
 
             # Next theta: use system update x_{k+1} = A * x_k + B * u_k
-            theta_next = (self.As[i] @ opt_x_f[:, 0] + self.Bs[i] @ opt_u_f[:, 0]).astype(np.float32)
-
+            # theta_next = (self.As[i] @ x0_theta + self.Bs[i] @ opt_u_f[:, 0]).astype(np.float32)
+            print('opt_u_f:', opt_u_f)
+            theta_next = torch.matmul(self.As[i], torch.from_numpy(x0_theta).to(self.device).float()) + \
+                torch.matmul(self.Bs[i], torch.from_numpy(opt_u_f[:, 0]).to(self.device).float())
             # Write back into q_next
             for idx_j, joint_idx in enumerate(theta_idxs):
                 q_next[joint_idx] = theta_next[idx_j]
@@ -204,110 +198,80 @@ torch.set_default_dtype(torch.float32)
 np.set_printoptions(precision=4, suppress=True)
 PI = 3.14
 
-def solve_optimization_problem(n_dimensions, x0, xf, cons_u, A, B, distance, gradient, dt, 
-                                solver=None, safety_buffer=0.6, cost_mat_Q=None, cost_mat_R=None):
+def solve_optimization_problem(n_dimensions, cons_u, B, targ_dist, targ_dist_grad, obs_dist, obs_dist_grad, dt, 
+                                solver=None, safety_buffer=0.6, cost_mat_R=None):
     """
     设置并求解优化问题 (支持任意维度)
     
     Args:
         n_dimensions: 系统维度 (DoF)
-        x0: 初始状态 (n_dimensions,)
-        xf: 目标状态 (n_dimensions,)
         cons_u: 控制输入约束
-        A: 状态转移矩阵 (n×n)
         B: 控制输入矩阵 (n×n)
-        distance: 到障碍物的距离
-        gradient: 距离场梯度
+        targ_dist: 目标点距离场
+        targ_dist_grad: 目标点距离场梯度
+        obs_dist: 到障碍物的距离
+        obs_dist_grad: 到障碍物距离的梯度
         dt: 时间步长
         solver: 求解器类型
         safety_buffer: 安全缓冲距离
-        cost_mat_Q: 状态代价矩阵 (可选)
         cost_mat_R: 控制代价矩阵 (可选)
     
     Returns:
-        opt_x: 优化后的状态轨迹
         opt_u: 优化后的控制输入
     """
-    n_states = n_dimensions
     n_controls = n_dimensions
-
-    # Decision variables (states and control inputs)
-    X_2d = ca.MX.sym('X', n_states, 1+1)  # shape = (n_dimensions, 2)
-    U_2d = ca.MX.sym('U', n_controls, 1)  # shape = (n_dimensions, 1)
-    
-    # 如果未提供代价矩阵，使用默认值
-    if cost_mat_Q is None:
-        # 默认Q矩阵: 对于不同维度使用不同的权重策略
-        if n_dimensions == 2:
-            cost_mat_Q = np.diag([100, 100])
-        elif n_dimensions == 3:
-            cost_mat_Q = np.diag([100, 100, 100])
-        elif n_dimensions == 7:  # 保持原始7DoF的权重
-            cost_mat_Q = np.diag([150, 190, 80, 70, 70, 90, 100])
-        else:
-            # 对于其他维度，使用统一权重
-            cost_mat_Q = np.diag([100] * n_dimensions)
-    
     if cost_mat_R is None:
         # 默认R矩阵: 控制输入的惩罚
-        cost_mat_R = np.diag([0.01] * n_dimensions)
+        cost_mat_R = torch.diag(torch.tensor([0.01] * n_dimensions))
 
-    # Objective function (minimize control effort)
-    obj_2d = 0
-    x_diff = X_2d[:, 1] - xf
-    obj_2d += ca.mtimes(x_diff.T, ca.mtimes(cost_mat_Q, x_diff)) + ca.mtimes(U_2d[:, 0].T, ca.mtimes(cost_mat_R, U_2d[:, 0]))
+    # Decision variables
+    U_2d = ca.MX.sym('U', n_controls, 1)
 
-    cons_x = 10  # 状态约束（速度限制）
-    lb_x = []  # Lower bound for the constraints
-    ub_x = []  # Upper bound for the constraints
-    lb_u = []
-    ub_u = []
-    
-    # Adding constraints
+    # Compute H and h for the objective function
+    pre_H = 1/2 * torch.matmul(targ_dist_grad, B) * dt
+    pre_H = pre_H.detach().cpu()
+    H = 0.5* torch.matmul(pre_H.T, pre_H) + cost_mat_R
+    h = 2 * torch.matmul(B.T, targ_dist_grad.T) * targ_dist * dt
+
+    H = H.detach().cpu().numpy()
+    h = h.detach().cpu().numpy()
+    obs_dist = obs_dist.detach().cpu().numpy()
+    obs_dist_grad = obs_dist_grad.detach().cpu().numpy()
+    print('H:', H)
+    print('h:', h)
+    print('B:', B)
+    print('targ_dist:', targ_dist)
+    print('targ_dist_grad:', targ_dist_grad)
+    print('obs_dist:', obs_dist)
+    print('obs_dist_grad:', obs_dist_grad)
+
+    # Objective function
+    obj_2d = ca.mtimes(U_2d[:, 0].T, ca.mtimes(H, U_2d[:, 0])) + ca.mtimes(U_2d[:, 0].T, h)
+
+    # Constraints
     g_2d = []
-    g_2d.append(X_2d[:, 0] - x0)  # 初始条件等式约束
-    # System dynamics constraint (系统动力学约束)
-    g_2d.append(X_2d[:, 1] - (ca.mtimes(A, X_2d[:, 0]) + ca.mtimes(B, U_2d[:, 0])))
     
     # inequality constraints for the collision avoidance (避碰不等式约束)
     # grad * u * dt <= log(dist + safety_buffer)
     # 转换为标准形式: -grad * u * dt - log(dist + safety_buffer) <= 0
-    g_2d.append(-ca.mtimes(ca.mtimes(gradient, U_2d), dt) - np.log(distance + safety_buffer))
-    
-    # 等式约束的上下界
-    lbg = [0] * n_states * (1+1)  # Lower bound of the constraints
-    ubg = [0] * n_states * (1+1)  # Upper bound of the constraints
-    lbg.append(-np.inf)
-    ubg.append(0)
-    
-    # =============================================== #
-    # inequality constraints for the velocity (速度不等式约束)
-    lb_x.append([-cons_x] * n_dimensions)
-    ub_x.append([cons_x] * n_dimensions)
-    
-    # inequality constraints for the control inputs (控制输入不等式约束)
-    lb_u.append([-cons_u] * n_dimensions)
-    ub_u.append([cons_u] * n_dimensions)
-    
-    # state is one more than control (第二个状态的约束)
-    lb_x.append([-cons_x] * n_dimensions)
-    ub_x.append([cons_x] * n_dimensions)
-    
-    lbx = ca.vertcat(*lb_x, *lb_u)
-    ubx = ca.vertcat(*ub_x, *ub_u)
-    
-    # QP structure
-    X_2d_long_vector = ca.reshape(X_2d, n_states*(1+1), 1)
-    U_2d_long_vector = ca.reshape(U_2d, n_controls*1, 1)
-    qp_x = ca.vertcat(X_2d_long_vector, U_2d_long_vector)
+    g_2d.append(-ca.mtimes(ca.mtimes(obs_dist_grad, U_2d), dt) - np.log(obs_dist + safety_buffer))
+
+    # Flatten constraints
     g_sys_vector = ca.vertcat(*g_2d)
 
-    # Create the QP
-    qp_2d = {'x': qp_x,
-            'f': obj_2d,
-            'g': g_sys_vector}
+    # Bounds for constraints
+    lbg = [-np.inf] * g_sys_vector.size()[0]
+    ubg = [0] * g_sys_vector.size()[0]
 
-    opts = {'print_time': 0,'error_on_fail': False, 'verbose': False}
+    # Control input bounds
+    lb_u = [-cons_u] * n_controls
+    ub_u = [cons_u] * n_controls
+
+    # QP structure
+    qp_x = ca.reshape(U_2d, n_controls, 1)
+    qp_2d = {'x': qp_x, 'f': obj_2d, 'g': g_sys_vector}
+
+    opts = {'print_time': 0, 'error_on_fail': False, 'verbose': False}
 
     # Create the solver
     if solver == 'ipopt':
@@ -320,13 +284,12 @@ def solve_optimization_problem(n_dimensions, x0, xf, cons_u, A, B, distance, gra
         solver_2d = ca.qpsol('solver', 'qrqp', qp_2d, opts)
 
     # Solve the problem
-    sol_2d = solver_2d(lbg=lbg, ubg=ubg, lbx=lbx, ubx=ubx)
-    
-    # Extract the optimal solution
-    opt_x_2d = sol_2d['x'][:n_states*(1+1)].full().reshape(1+1, n_states).T
-    opt_u_2d = sol_2d['x'][n_states*(1+1):].full().reshape(1, n_controls).T
+    sol_2d = solver_2d(lbg=lbg, ubg=ubg)
 
-    return opt_x_2d, opt_u_2d
+    # Extract the optimal solution
+    opt_u_2d = sol_2d['x'][:].full().reshape(1, n_controls).T
+
+    return opt_u_2d
 
 
 def ring(radius, center, rot, device):

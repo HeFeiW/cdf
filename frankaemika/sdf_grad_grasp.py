@@ -10,14 +10,15 @@ import pybullet as p
 import pybullet_data as pd
 import numpy as np
 import sys
+from task_utils import seperate_target_obstacle
 sys.path.append("../../RDF")
-sys.path.append("../../RDF/panda_layer")
+sys.path.append("../../RDF/panda_layers")
 from parallel_bf_sdf import ParallelBPSDF
 from qsdf import QSDF
 from parallel_robot_layer import ParallelRobotLayer
 from para_nn_cdf import CDF
 from pybullet_utils import load_sdf_model, sample_points_from_obj
-
+from qp_mp_tao import QPPlanner
 import time
 from pybullet_robot_sim import PandaSim, SphereManager
 import torch
@@ -85,6 +86,7 @@ def main_loop():
     parser.add_argument('--device', type=str, default='cuda', help='Device to use (default: cuda)')
     parser.add_argument('--data_path', type=str, default='data_finger_no_base.pt', help='Sub-directory in data/ to save the results (default: test)')
     parser.add_argument('--cdf', action='store_true', help='Use CDF for collision checking')
+    parser.add_argument('--qp', action='store_true', help='Use QP projection for CDF')
     parser.add_argument('--sdf_type', type=str, default='qsdf', choices=['bp_sdf', 'siren_sdf','qsdf'], help='Type of SDF model to use (default: bp_sdf)')
     args = parser.parse_args()
     N_FUNC = 8
@@ -121,45 +123,67 @@ def main_loop():
     # --- load the robot layer ---
     robot_layer = ParallelRobotLayer(device=args.device,paths=paths,robot=args.robot)
     
-    # --- load the bp_sdf model ---
-    bp_sdf = ParallelBPSDF(n_func=N_FUNC,
-                           domain_min=DOMAIN_MIN,
-                           domain_max=DOMAIN_MAX,
-                           robot=robot_layer,
-                           device=args.device,
-                           paths=paths)
     
-    # --- load the q_sdf model ---
-    if args.sdf_type == 'qsdf':
-        q_sdfs = []
-        for serial in robot_layer.serials:
-            used_links = serial.all_links.copy()
-            if 'palm_lower_left' in used_links:
-                used_links.remove('palm_lower_left') 
-            q_sdfs.append(QSDF(robot=serial,paths=paths,device=args.device,used_links=used_links))
     
-    # --- load the bp_sdf model ---
-    elif args.sdf_type == 'bp_sdf':
-        bp_sdf_model = ParallelBPSDF(n_func=N_FUNC,
-                                     domain_min=DOMAIN_MIN,
-                                     domain_max=DOMAIN_MAX,
-                                     robot=robot_layer,
-                                     device=args.device,
-                                     paths=paths)
-    # --- load the cdf model ---
-    cdf = CDF(device=args.device, paths=paths,robot=args.robot,signed_distance=True,serial_idx=0)
     
-    # --- TODO: temporarily load the cdf model like this, with input_dims=4+3=7 ---
-    cdf_models = []
-    for i in range(len(robot_layer.serials)):
-        cdf_model = MLPRegression(input_dims=7, output_dims=1, mlp_layers=[1024, 512, 256, 128, 128],skips=[], act_fn=torch.nn.ReLU, nerf=True)
-        cdf_model.load_state_dict(torch.load(paths['model_dict'][i])[49900])
-        cdf_model.to(device)
-        cdf_models.append(cdf_model)
+    
         
     # --- use sdf or cdf for collision checking ---
     use_cdf = args.cdf
-    
+    use_qp = args.qp
+    if use_cdf:
+        cdf = CDF(device=args.device, paths=paths,robot=args.robot,signed_distance=True,serial_idx=0)
+        # --- TODO: temporarily load the cdf model like this for leaphand,
+        # with input_dims=4+3=7 ---
+        cdf_models = []
+        for i in range(len(robot_layer.serials)):
+            cdf_model = MLPRegression(input_dims=7, output_dims=1, mlp_layers=[1024, 512, 256, 128, 128],skips=[], act_fn=torch.nn.ReLU, nerf=True)
+            cdf_model.load_state_dict(torch.load(paths['model_dict'][i])[49900])
+            cdf_model.to(device)
+            cdf_models.append(cdf_model)
+        # --- use qp or projection for cdf ---
+        if use_qp:
+            # initialize the QP solver
+            qp_solver = QPPlanner(robot_layer=robot_layer,
+                                cdf=cdf,
+                                cdf_models=cdf_models,
+                                dt=0.01,
+                                cons_u=2.7,
+                                solver='ipopt',
+                                safety_buffer=0.3,
+                                device=args.device)
+            # debug: temporarily set full target joint positions as max joint positions
+            xf_full = robot_layer.theta_max.unsqueeze(0).cpu().numpy()
+    else:
+        if use_qp:
+            print('Warning: --qp flag is set but --cdf flag is not set. Ignoring --qp flag.')
+            use_qp = False
+        # --- load the bp_sdf model ---
+        bp_sdf = ParallelBPSDF(n_func=N_FUNC,
+                            domain_min=DOMAIN_MIN,
+                            domain_max=DOMAIN_MAX,
+                            robot=robot_layer,
+                            device=args.device,
+                            paths=paths)
+        
+        # --- load the q_sdf model ---
+        if args.sdf_type == 'qsdf':
+            q_sdfs = []
+            for serial in robot_layer.serials:
+                used_links = serial.all_links.copy()
+                if 'palm_lower_left' in used_links:
+                    used_links.remove('palm_lower_left') 
+                q_sdfs.append(QSDF(robot=serial,paths=paths,device=args.device,used_links=used_links))
+        
+        # --- load the bp_sdf model ---
+        elif args.sdf_type == 'bp_sdf':
+            bp_sdf_model = ParallelBPSDF(n_func=N_FUNC,
+                                        domain_min=DOMAIN_MIN,
+                                        domain_max=DOMAIN_MAX,
+                                        robot=robot_layer,
+                                        device=args.device,
+                                        paths=paths)
+
     # --------- pybullet setup -----------
     p.setPhysicsEngineParameter(maxNumCmdPer1ms=1000)
     p.resetSimulation(p.RESET_USE_DEFORMABLE_WORLD)
@@ -252,7 +276,7 @@ def main_loop():
         # p.resetDebugVisualizerCamera(cameraDistance=0.25, cameraYaw=180, cameraPitch=-30, cameraTargetPosition=[0, 0, 0.45]) # 从指尖方向看
         # p.resetDebugVisualizerCamera(cameraDistance=0.25, cameraYaw=90, cameraPitch=-60, cameraTargetPosition=[0, 0, 0.45]) # 从正前方
         p.resetDebugVisualizerCamera(cameraDistance=0.25, cameraYaw=60, cameraPitch=20, cameraTargetPosition=obj_center) # 从指尖方向看
-    c=input('Press any key to continue')
+        c=input('Press any key to continue')
     ############ main loop ############
     for _ in range(loop_num):
         for _ in range(300):
@@ -268,13 +292,16 @@ def main_loop():
             # print(f'torques: {torques}')
             print('')
             position, orientation = p.getBasePositionAndOrientation(obj)
-            # --- debug: for clarity, sample one point only ---
             x = sample_points_from_obj(obj, num_samples=100)
             x = torch.from_numpy(np.array(x)).to(device).float()
+            targ_x, obs_x = seperate_target_obstacle(x)
             # 获得robot base link的位置
             robot_base_pos, robot_base_orn = p.getBasePositionAndOrientation(robot.panda)
             matrix = torch.tensor(p.getMatrixFromQuaternion(robot_base_orn)).reshape(3,3).to(device)
-            x_in_robot_frame = (torch.matmul(matrix.T, (x - torch.tensor(robot_base_pos).to(device).float()).T)).T
+            # x_in_robot_frame = (torch.matmul(matrix.T, (x - torch.tensor(robot_base_pos).to(device).float()).T)).T
+            targ_x_in_robot_frame = (torch.matmul(matrix.T, (targ_x - torch.tensor(robot_base_pos).to(device).float()).T)).T
+            obs_x_in_robot_frame = (torch.matmul(matrix.T, (obs_x - torch.tensor(robot_base_pos).to(device).float()).T)).T
+            # x_in_robot_frame: (N, 3)
             q = torch.tensor([robot.get_joint_positions()],requires_grad=True).to(device).float()
             print(f'q:', q)
             contact_points = p.getContactPoints(bodyA=robot.panda, bodyB=obj)
@@ -292,14 +319,22 @@ def main_loop():
                     pose[:, :3, 3] = torch.tensor(base_pos).to(device).float()
                     theta = torch.stack([q[:,robot_layer.Joint2Idx[joint]] for joint in serial.Joint2Idx.keys()],dim=-1)
                     if use_cdf:
-                        cdf_model = cdf_models[i]
-                        cdf_min, cdf_grad = cdf.inference_d_wrt_q(x_in_robot_frame, theta,cdf_model)
-                        q_proj = cdf.projection(theta, cdf_min, cdf_grad)
-                        print('cdf_min:', cdf_min)
-                        print('cdf_grad:', cdf_grad)
-                        print('theta before:', theta)
-                        theta = q_proj
-                        print('theta after:', theta)
+                        if use_qp:
+                            # use qp for cdf
+                            # qp 只能处理B=1情况!!
+                            full_next_q = qp_solver.step(q_full=q.squeeze(0), obs_pts=obs_x_in_robot_frame, targ_pts=targ_x_in_robot_frame)
+                            theta = torch.stack([full_next_q[robot_layer.Joint2Idx[joint]] for joint in serial.Joint2Idx.keys()],dim=-1).unsqueeze(0)
+                            print('diff in theta:', theta - torch.stack([q[:,robot_layer.Joint2Idx[joint]] for joint in serial.Joint2Idx.keys()],dim=-1))
+                        else:
+                            # use projection for cdf
+                            cdf_model = cdf_models[i]
+                            cdf_min, cdf_grad = cdf.inference_d_wrt_q(x_in_robot_frame, theta,cdf_model)
+                            q_proj = cdf.projection(theta, cdf_min, cdf_grad)
+                            print('cdf_min:', cdf_min)
+                            print('cdf_grad:', cdf_grad)
+                            print('theta before:', theta)
+                            theta = q_proj
+                            print('theta after:', theta)
                         if in_contact:
                             print('--- in contact ---')
                             c = input('Press any key to continue')
@@ -343,7 +378,6 @@ def main_loop():
                 print(f'q_next: {q_next}')
                 print('simulating...')
                 robot.set_joint_positions(q_next[0].data.cpu().numpy())
-                # c=input('Press any key to continue')
             else:
                 
                 print(f'in contact')
@@ -360,11 +394,6 @@ def main_loop():
                 q_normal = q_normal / torch.norm(q_normal, dim=-1, keepdim=True)
                 q_next = q - step_size * q_normal
                 q_init = q_next
-                # while(True):
-                #     keys = p.getKeyboardEvents()
-                #     if p.B3G_SPACE in keys and keys[p.B3G_SPACE] & p.KEY_WAS_TRIGGERED:
-                #         print('space key pressed')
-                #         break
                 time.sleep(0.1)
                 print(f'd: {d.cpu().detach().numpy()[0]}')
                 # print(f'q_next: {q_next}, q_normal: {q_normal}')
