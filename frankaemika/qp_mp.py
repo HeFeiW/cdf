@@ -27,6 +27,7 @@ from pybullet_panda_sim import PandaSim, SphereManager
 
 def create_system_matrices(n, dt):
     # For a single integrator, A is an identity matrix and B is a dt scaled identity matrix
+    # x_{k+1} = A*x_k + B*u_k, x for position, u for velocity
     A_d = np.eye(n)
     B_d = np.eye(n) * dt
     return A_d, B_d
@@ -39,6 +40,27 @@ PI = 3.14
 def solve_optimization_problem(n_dimensions, x0_2d, xf_2d, cons_u, A, B, distance, gradient, dt, solver=None, safety_buffer=0.6):
     """
     Set up and solve the optimization problem.
+    inputs:
+        n_dimensions: int, number of dimensions
+        x0_2d: np.array, shape = (n_dimensions,), initial state
+        xf_2d: np.array, shape = (n_dimensions,), final state
+        cons_u: float, control input constraint
+        A: np.array, shape = (n_dimensions, n_dimensions), system matrix
+        B: np.array, shape = (n_dimensions, n_dimensions), input matrix
+        distance: float, distance to the obstacle
+        gradient: np.array, shape = (1, n_dimensions), gradient of the distance field
+        dt: float, time step
+        solver: str, solver name
+    returns:
+        opt_x_2d: np.array, shape = (n_dimensions, 2), optimal states
+        opt_u_2d: np.array, shape = (n_dimensions, 1), optimal control inputs
+    objective function: minimize (x - xf).T*Q*(x - xf) + u.T*R*u 目标位姿的跟随误差 + 控制量的能量消耗
+    constraints: 
+        x[:,0] = x0  系统初始状态约束
+        x[:,1] = A*x[:,0] + B*u[:,0] 系统动力学约束 (x_k+1 = A*x_k + B*u_k)
+        - gradient*u*dt - log(distance + safety_buffer) <= 0  避障约束
+        -cons_x <= x <= cons_x  状态约束
+        -cons_u <= u <= cons_u  控制量约束
     """
     n_states =  n_dimensions
     n_controls = n_dimensions
@@ -46,9 +68,9 @@ def solve_optimization_problem(n_dimensions, x0_2d, xf_2d, cons_u, A, B, distanc
     # Decision variables (states and control inputs)
     X_2d = ca.MX.sym('X', n_states, 1+1)  # shape = (7, 2)
     U_2d = ca.MX.sym('U', n_controls, 1)  # shape = (7, 1)
-    cost_mat_Q = np.diag([150, 190, 80, 70, 70, 90, 100]) # Q matrix
+    cost_mat_Q = np.diag([150, 190, 80, 70, 70, 90, 100]) # Q matrix 偏离目标的惩罚
     # cost_mat_Q = np.diag([100, 100, 100, 100, 100, 90, 100]) # Q matrix
-    cost_mat_R = np.diag([0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01])
+    cost_mat_R = np.diag([0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01]) # R matrix 控制量的惩罚
 
     # Objective function (minimize control effort)
     obj_2d = 0
@@ -226,7 +248,8 @@ def main():
     log_dis_to_obstacle = []
     safety_buffer = 0.3
 
-
+    # 这实际上是一个 基于 QP 的 Model Predictive Control (MPC) 框架，每步只求一时刻的最优控制。
+    # 即，每次迭代只解决一个时间步长的优化问题，然后将系统状态更新为下一个时间步长，重复该过程直到达到目标或满足停止条件。
     for i in range(N):
         log_opt_x_7d.append(x0_7d)
 
