@@ -16,7 +16,7 @@ import time
 import argparse
 CUR_PATH = os.path.dirname(os.path.realpath(__file__))
 from mlp import MLPRegression
-sys.path.append(os.path.join(CUR_PATH,'../../RDF/panda_layer'))
+sys.path.append(os.path.join(CUR_PATH,'../../RDF/panda_layers'))
 from parallel_robot_layer import ParallelRobotLayer
 sys.path.append(os.path.join(CUR_PATH,'../../RDF'))
 from parallel_bf_sdf import ParallelBPSDF
@@ -315,6 +315,7 @@ class CDF:
         return model
     
     def inference(self,x,q,model):
+        # 隐式使用了self.serial_idx, 因此只能用于单个serial的robot
         DoF = self.robot.serials[self.serial_idx].dof
         model.eval()
         x,q = x.to(self.device),q.to(self.device)
@@ -329,6 +330,7 @@ class CDF:
         return cdf_pred
     
     def inference_d_wrt_q(self,x,q,model,return_grad = True):
+        # 隐式使用了self.serial_idx, 因此只能用于单个serial的robot
         cdf_pred = self.inference(x,q,model)
         # cdf_pred先取绝对值，再reshape成(len(x),len(q))
         d = cdf_pred.abs().reshape(len(x),len(q)).min(dim=0)[0]

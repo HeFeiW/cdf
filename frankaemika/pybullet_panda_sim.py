@@ -12,8 +12,8 @@ from math import pi
 import os
 CUR_PATH = os.path.dirname(os.path.realpath(__file__))
 
-pandaNumDofs = 16
-URDF_PATH = os.path.join(CUR_PATH,"../../RDF/descriptions/leaphand/leap_hand_left.urdf")
+pandaNumDofs = 7
+URDF_PATH = os.path.join(CUR_PATH,"../../RDF/descriptions/panda/panda.urdf")
 
 # restpose
 rp = [0.0,0.0, -1.57461, -1.60788, -0.785175,   1.54666, -0.882595, 0.02, 0.02]
@@ -31,7 +31,6 @@ class PandaSim():
         # self.bullet_client.loadURDF('LAB/lab.urdf', np.array([1.01, -0.28, 0.45]), table_rot, flags=flags)
         #self.bullet_client.loadURDF('lab_table/table.urdf', np.array([-0.15, 0.02, -0.1]), table_rot, flags=flags)
         # self.bullet_client.loadURDF('plane.urdf', np.array([0, 0, 0]), np.array([0, 0, 0, 1]), flags=flags)
-
         self.panda = self.bullet_client.loadURDF(URDF_PATH, self.base_pos,
                                                  self.base_rot, useFixedBase=True, flags=flags)
         print("panda=", self.panda)

@@ -122,12 +122,7 @@ def main_loop():
         }
     # --- load the robot layer ---
     robot_layer = ParallelRobotLayer(device=args.device,paths=paths,robot=args.robot)
-    
-    
-    
-    
-    
-        
+            
     # --- use sdf or cdf for collision checking ---
     use_cdf = args.cdf
     use_qp = args.qp
@@ -150,7 +145,7 @@ def main_loop():
                                 dt=0.01,
                                 cons_u=2.7,
                                 solver='ipopt',
-                                safety_buffer=0.3,
+                                safety_buffer=0.7,
                                 device=args.device)
             # debug: temporarily set full target joint positions as max joint positions
             xf_full = robot_layer.theta_max.unsqueeze(0).cpu().numpy()
@@ -242,17 +237,78 @@ def main_loop():
         p.changeDynamics(obj, -1, lateralFriction=0.5, spinningFriction=0.1, rollingFriction=0.1)
     # ----- mug -----
     elif obj_to_grasp == 'mug':
-        sdf_path = "/workspace/cdf/Threshold_Porcelain_Coffee_Mug_All_Over_Bead_White/model.sdf"
+        model_path = "/workspace/cdf/models/"
+        # 列出model_path下的所有文件夹
+        mug_models = [f for f in os.listdir(model_path) if os.path.isdir(os.path.join(model_path, f))]
+        print(f"Available mug models: {mug_models}")
+        idx = input(f"Select a mug model by index (0 to {len(mug_models)-1}): ")
+        sdf_path = f"/workspace/cdf/models/{mug_models[int(idx)]}/model.sdf"
         base_position = [0, 0, 0.5]
         base_orientation = p.getQuaternionFromEuler([0, 0, 0])
         obj = load_sdf_model(sdf_path, base_position, base_orientation)
         print(f"Loaded object ID: {obj}")
         # 设置物体的位置和朝向
+        if idx == '1':
+            obj_center = np.array([-0.12, -0.1, 0.2])
+            obj_orientation = (0.025025054425244452, 0.025025054425244556, -0.7066638144485776, 0.7066638144485773)
+            p.resetBasePositionAndOrientation(obj, obj_center, obj_orientation)
+            p.changeDynamics(obj, -1, lateralFriction=0.5, spinningFriction=0.1, rollingFriction=0.1)
         obj_center = np.array([-0.10, 0, 0.4])
         obj_orientation = p.getQuaternionFromEuler([np.pi/2, np.pi/2, 0])  # 无旋转
+        obj_center = np.array([-0.08, -0.04, 0.35])
+        obj_orientation = (-0.010324690776177509, 0.06031225002339917, -0.7045299372610894, 0.7070314001233444)
         p.resetBasePositionAndOrientation(obj, obj_center, obj_orientation)
+        ok = False
+        while not ok:
+            # 用上下左右，< > 键调整物体x, y, z位置变大或变小
+            
+            # 用1,2,3 键调整物体绕x,y,z轴旋转
+            p.stepSimulation()
+            keys = p.getKeyboardEvents()
+            for k in keys:
+                print(f'key pressed: {k}')
+                if keys[k] & p.KEY_WAS_TRIGGERED:
+                    if k == ord('i'):  # up
+                        obj_center[1] += 0.01
+                    elif k == ord('k'):  # down
+                        obj_center[1] -= 0.01
+                    elif k == ord('j'):  # left
+                        obj_center[0] -= 0.01
+                    elif k == ord('l'):  # right
+                        obj_center[0] += 0.01
+                    elif k == ord('u'):  # z+
+                        obj_center[2] += 0.01
+                    elif k == ord('o'):  # z-
+                        obj_center[2] -= 0.01
+                    elif k == ord('1'):  # rot x+
+                        euler = list(p.getEulerFromQuaternion(obj_orientation))
+                        euler[0] += 0.1
+                        obj_orientation = p.getQuaternionFromEuler(euler)
+                    elif k == ord('2'):  # rot y+
+                        euler = list(p.getEulerFromQuaternion(obj_orientation))
+                        euler[1] += 0.1
+                        obj_orientation = p.getQuaternionFromEuler(euler)
+                    elif k == ord('3'):  # rot z+
+                        euler = list(p.getEulerFromQuaternion(obj_orientation))
+                        euler[2] += 0.1
+                        obj_orientation = p.getQuaternionFromEuler(euler)
+                    elif k == ord('4'):  # rot x-
+                        euler = list(p.getEulerFromQuaternion(obj_orientation))
+                        euler[0] -= 0.1
+                        obj_orientation = p.getQuaternionFromEuler(euler)
+                    elif k == ord('5'):  # rot y-
+                        euler = list(p.getEulerFromQuaternion(obj_orientation))
+                        euler[1] -= 0.1
+                        obj_orientation = p.getQuaternionFromEuler(euler)
+                    elif k == ord('6'):  # rot z-
+                        euler = list(p.getEulerFromQuaternion(obj_orientation))
+                        euler[2] -= 0.1
+                        obj_orientation = p.getQuaternionFromEuler(euler)
+                    elif k == ord('q'):  # quit adjustment
+                        ok = True
+            p.resetBasePositionAndOrientation(obj, obj_center, obj_orientation)
         p.changeDynamics(obj, -1, lateralFriction=0.5, spinningFriction=0.1, rollingFriction=0.1)
-    
+        print(f'Final object center: {obj_center}, orientation: {obj_orientation}')
     # box
     # obj_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=obj_size, rgbaColor=[0.8500, 0.3250, 0.0980, 1.0])
     # obj_collision = p.createCollisionShape(p.GEOM_BOX, halfExtents=obj_size)
@@ -286,15 +342,16 @@ def main_loop():
         p.resetBaseVelocity(obj, linearVelocity=[0, 0, 0], angularVelocity=[0, 0, 0])
 
         q = q_init
+        x = sample_points_from_obj(obj, num_samples=1000)
+        x = torch.from_numpy(np.array(x)).to(device).float()
+        targ_x, obs_x = seperate_target_obstacle(x)
         while(True):
             # print(f'joint positions:{robot.get_joint_positions()}')
             torques = p.getJointStates(robot.panda, range(pandaNumDofs))
             # print(f'torques: {torques}')
             print('')
             position, orientation = p.getBasePositionAndOrientation(obj)
-            x = sample_points_from_obj(obj, num_samples=100)
-            x = torch.from_numpy(np.array(x)).to(device).float()
-            targ_x, obs_x = seperate_target_obstacle(x)
+
             # 获得robot base link的位置
             robot_base_pos, robot_base_orn = p.getBasePositionAndOrientation(robot.panda)
             matrix = torch.tensor(p.getMatrixFromQuaternion(robot_base_orn)).reshape(3,3).to(device)

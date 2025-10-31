@@ -16,7 +16,7 @@ import time
 import argparse
 CUR_PATH = os.path.dirname(os.path.realpath(__file__))
 from mlp import MLPRegression
-sys.path.append(os.path.join(CUR_PATH,'../../RDF/panda_layer'))
+sys.path.append(os.path.join(CUR_PATH,'../../RDF/panda_layers'))
 from robot_layer import RobotLayer
 import bf_sdf
 

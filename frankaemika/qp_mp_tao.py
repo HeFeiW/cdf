@@ -1,5 +1,5 @@
 # Multi-serial (multi-finger) QP planner utility supporting arbitrary DoF per serial.
-# target points reaching and obstacle avoidance via CDF distance fields.
+# Target points reaching And Obstacle avoidance via CDF distance fields.
 import casadi as ca
 import numpy as np
 import matplotlib.pyplot as plt

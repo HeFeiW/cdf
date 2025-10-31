@@ -45,6 +45,7 @@ class DataGenerator():
         self.epsilon = 1e-3         # distance threshold to filter data
         self.used_links = self.robot.serials[self.serial_idx].all_links.copy()
         print('used_links:',self.used_links)
+
         if 'palm_lower_left' in self.used_links:
             self.used_links.remove('palm_lower_left')
         print('used_links after removing palm_lower_left:',self.used_links)
