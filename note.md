@@ -232,3 +232,16 @@ def get_data_files():
 # --port_in_host 主机上的端口
 # --volume 额外挂载的卷(格式为 <host_path>:<container_path>)
 ```
+
+### tensorboard使用说明
+运行：
+```bash
+tensorboard --logdir=/workspace/cdf/frankaemika/runs/ --port 6006 --bind_all
+# 然后在浏览器中打开 http://localhost:6006 查看训练日志
+```
+注意：如果使用Docker容器运行代码，确保容器内的6006端口映射到主机的6006端口。（`. run-docker.bash --use-port-forward --port 6006 --port_in_docker 6006`）
+
+在本地使用MobaXTerm通过SSH隧道转发端口连接到远程服务器的6006端口：
+```bash
+ssh -L 6006:localhost:6006 user@remote_server
+```

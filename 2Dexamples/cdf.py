@@ -42,7 +42,7 @@ class CDF2D:
         self.q_max = torch.tensor([PI]).expand(self.num_joints).to(device)
         self.q_min = torch.tensor([-PI]).expand(self.num_joints).to(device)
         self.Q_grid = self.create_grid_torch(self.nbData).to(device)
-
+        print('shape of Q_grid: ',self.Q_grid.shape)
         # data generation
         self.task_space = [[-4.0,-4.0],[4.0,4.0]]
         self.batchsize = 40000       # batch size of q
@@ -67,6 +67,8 @@ class CDF2D:
     #     return self.q0,self.q1
     def create_grid_dof(self,nb_data,dof):
         # 把create_grid的numpy版本改成dof维度
+        # 返回一个形状为(nb_data**dof,dof)的数组
+        print(f'dof: {dof}, nb_data: {nb_data}')
         q_list = []
         t = np.linspace(self.q_min.cpu().numpy(),self.q_max.cpu().numpy(), nb_data)
         for i in range(dof):
@@ -271,8 +273,11 @@ class CDF2D:
         sdf = self.inference_sdf(self.Q_grid,obj_lists)
         sdf = sdf.detach().cpu().numpy()
         # 绘制等高线
-        ax.contour(self.q0, self.q1, sdf.reshape(self.nbData, self.nbData), levels=[0], linewidths=6, colors='black', alpha=1.0)
-        ct = ax.contourf(self.q0, self.q1, sdf.reshape(self.nbData, self.nbData), levels=6, linewidths=1, cmap='coolwarm')
+        print('shape of sdf: {}'.format(sdf.shape))
+        print('shape of Q_grid: {}'.format(self.Q_grid.shape))
+        q0, q1 = self.Q_grid[:,0].detach().cpu().numpy(), self.Q_grid[:,1].detach().cpu().numpy()
+        ax.contour(q0, q1, sdf.reshape(self.nbData, self.nbData), levels=[0], linewidths=6, colors='black', alpha=1.0)
+        ct = ax.contourf(q0, q1, sdf.reshape(self.nbData, self.nbData), levels=6, linewidths=1, cmap='coolwarm')
         ax.clabel(ct, inline=False, fontsize=15, colors='black', fmt='%.1f')
 
         # fig = plt.gcf()  # Get the current figure
@@ -336,9 +341,9 @@ class CDF2D:
         ax.set_xlim(axis_limits)
         ax.set_ylim(axis_limits)
         ax.tick_params(axis='both', labelsize=20)
-
-        ax.contour(self.q0, self.q1, d.reshape(self.nbData, self.nbData), levels=[0], linewidths=6, colors='black', alpha=1.0)
-        ct = ax.contourf(self.q0, self.q1, d.reshape(self.nbData, self.nbData), levels=8, linewidths=1, cmap='coolwarm')
+        q0, q1 = self.Q_grid[:,0].detach().cpu().numpy(), self.Q_grid[:,1].detach().cpu().numpy()
+        ax.contour(q0, q1, d.reshape(self.nbData, self.nbData), levels=[0], linewidths=6, colors='black', alpha=1.0)
+        ct = ax.contourf(q0, q1, d.reshape(self.nbData, self.nbData), levels=8, linewidths=1, cmap='coolwarm')
         ax.clabel(ct, inline=False, fontsize=15, colors='black', fmt='%.1f')
 
 

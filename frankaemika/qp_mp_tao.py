@@ -107,17 +107,17 @@ class QPPlanner:
             targ_dist_torch, targ_dist_grad_torch = self.cdf.inference_d_wrt_q(targ_pts, x0_torch, self.cdf_models[i], return_grad=True)
             
             # Solve per-serial QP (returns opt_u: shape (dof_i, 1))
+           
             opt_u_f = solve_optimization_problem(n_dimensions=dof_i,
-                                                          cons_u=self.cons_u,
-                                                            B=self.Bs[i],
-                                                            targ_dist=targ_dist_torch,
-                                                            targ_dist_grad=targ_dist_grad_torch,
-                                                            obs_dist=obs_dist_torch,
-                                                            obs_dist_grad=obs_dist_grad_torch,
-                                                            dt=self.dt,
-                                                            solver=self.solver,
-                                                            safety_buffer=self.safety_buffer)
-
+                                                 cons_u=self.cons_u,
+                                                 B=self.Bs[i],
+                                                 targ_dist=targ_dist_torch,
+                                                 targ_dist_grad=targ_dist_grad_torch,
+                                                 obs_dist=obs_dist_torch,
+                                                 obs_dist_grad=obs_dist_grad_torch,
+                                                 dt=self.dt,
+                                                 solver=self.solver,
+                                                 safety_buffer=self.safety_buffer)
             # Next theta: use system update x_{k+1} = A * x_k + B * u_k
             # theta_next = (self.As[i] @ x0_theta + self.Bs[i] @ opt_u_f[:, 0]).astype(np.float32)
             print('opt_u_f:', opt_u_f)
@@ -199,7 +199,7 @@ np.set_printoptions(precision=4, suppress=True)
 PI = 3.14
 
 def solve_optimization_problem(n_dimensions, cons_u, B, targ_dist, targ_dist_grad, obs_dist, obs_dist_grad, dt, 
-                                solver=None, safety_buffer=0.6, cost_mat_R=None):
+                                solver=None, safety_buffer=0.6, cost_mat_R=None, seed=42):
     """
     设置并求解优化问题 (支持任意维度)
     
@@ -219,6 +219,14 @@ def solve_optimization_problem(n_dimensions, cons_u, B, targ_dist, targ_dist_gra
     Returns:
         opt_u: 优化后的控制输入
     """
+    # 问题：
+    # min 1/2 u^T H u + h^T u
+    # s.t. g(u) <= 0
+    # 其中 
+    # H = (B^T * targ_dist_grad^T * targ_dist_grad * B) * dt^2 + R
+    # h = 2 * B^T * targ_dist_grad^T * targ_dist * dt
+    # g(u) = -obs_dist_grad * u * dt - log(obs_dist + safety_buffer) <= 0
+    np.random.seed(seed)
     n_controls = n_dimensions
     if cost_mat_R is None:
         # 默认R矩阵: 控制输入的惩罚
@@ -282,7 +290,6 @@ def solve_optimization_problem(n_dimensions, cons_u, B, targ_dist, targ_dist_gra
         solver_2d = ca.qpsol('solver', 'qpoases', qp_2d, opts)
     elif solver == 'qrqp':
         solver_2d = ca.qpsol('solver', 'qrqp', qp_2d, opts)
-
     # Solve the problem
     sol_2d = solver_2d(lbg=lbg, ubg=ubg)
 
@@ -386,7 +393,7 @@ def main():
     # For multi-finger case we already created per-finger A/B matrices and models above
     distance_filed = 'cdf'
     qp_solver_dict = {0: 'ipopt', 1: 'osqp', 2: 'qpOASES', 3: 'qrqp'}
-    solver = 0  # 选择求解器
+    solver = 0  # 选择求解器(默认使用ipopt)
     solver = qp_solver_dict[solver]
     cons_u = 2.7  # 控制输入约束
     

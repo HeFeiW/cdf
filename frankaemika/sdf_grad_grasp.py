@@ -1,10 +1,14 @@
-# -----------------------------------------------------------------------------
-# SPDX-License-Identifier: MIT
-# This file is part of the CDF project.
-# Copyright (c) 2024 Idiap Research Institute <contact@idiap.ch>
-# Contributor: Yimming Li <yiming.li@idiap.ch>
-# -----------------------------------------------------------------------------
-
+# 在pybullet中使用Franka Panda/leaphand机器人进行抓取任务
+# 命令行参数：
+# --step_size: 在zero-level-set上移动的步长，默认值为1
+# --display_mode: 显示模式，GUI或DIRECT，默认值为GUI
+# --robot: 机器人名称，默认值为leaphand
+# --model_dict: 用于保存/加载模型字典的路径，默认值为finger_no_base.pt
+# --device: 使用的设备，默认值为cuda
+# --data_path: data/下用于保存结果的子目录，默认值为test
+# --cdf: 使用CDF进行碰撞检测
+# --qp: 对CDF使用QP投影
+# --sdf_type: 使用的SDF模型类型，bp_sdf、siren_sdf或qsdf，默认值为bp_sdf
 
 import pybullet as p
 import pybullet_data as pd
@@ -255,11 +259,11 @@ def main_loop():
             p.changeDynamics(obj, -1, lateralFriction=0.5, spinningFriction=0.1, rollingFriction=0.1)
         obj_center = np.array([-0.10, 0, 0.4])
         obj_orientation = p.getQuaternionFromEuler([np.pi/2, np.pi/2, 0])  # 无旋转
-        obj_center = np.array([-0.08, -0.04, 0.35])
-        obj_orientation = (-0.010324690776177509, 0.06031225002339917, -0.7045299372610894, 0.7070314001233444)
+        # obj_center = np.array([-0.08, -0.04, 0.35])
+        # obj_orientation = (-0.010324690776177509, 0.06031225002339917, -0.7045299372610894, 0.7070314001233444)
         p.resetBasePositionAndOrientation(obj, obj_center, obj_orientation)
         ok = False
-        while not ok:
+        while not ok and display_mode == 'GUI':
             # 用上下左右，< > 键调整物体x, y, z位置变大或变小
             
             # 用1,2,3 键调整物体绕x,y,z轴旋转
@@ -382,7 +386,7 @@ def main_loop():
                             full_next_q = qp_solver.step(q_full=q.squeeze(0), obs_pts=obs_x_in_robot_frame, targ_pts=targ_x_in_robot_frame)
                             theta = torch.stack([full_next_q[robot_layer.Joint2Idx[joint]] for joint in serial.Joint2Idx.keys()],dim=-1).unsqueeze(0)
                             print('diff in theta:', theta - torch.stack([q[:,robot_layer.Joint2Idx[joint]] for joint in serial.Joint2Idx.keys()],dim=-1))
-                        else:
+                        else:# not using qp
                             # use projection for cdf
                             cdf_model = cdf_models[i]
                             cdf_min, cdf_grad = cdf.inference_d_wrt_q(x_in_robot_frame, theta,cdf_model)

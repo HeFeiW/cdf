@@ -573,6 +573,8 @@ if __name__ == "__main__":
     scene_4_target = [Box(center=torch.tensor([1.25,-1.5]).to(device),w=0.5,h=0.5,attract=True,device=device),
                 Box(center=torch.tensor([1.25, -2.5]).to(device),w=0.5,h=0.5,attract=True,device=device)]
 
+    scene_5_object = [Box(center=torch.tensor([2.0, 2.0]).to(device),w=0.5,h=0.5,attract=False,device=device)]
+    scene_5_target = [Circle(center=torch.tensor([0.0,-2.25]).to(device),radius=0.5,attract=True,device=device)]
 
     # a,b,c= cdf.find_q(scene_1,2)
     # print('number of q in scene_1: ',len(b))
@@ -590,16 +592,16 @@ if __name__ == "__main__":
     # 画一张图，上面得cdf等高线是由scene4_traget决定的，同时用黑色标记出sence4_object的zero_level_set
     plt.figure(figsize=(10,8))
     ax = plt.gca()
-    cdf.plot_cdf(ax=ax,obj_lists=scene_4_target)
-    cdf.plot_0_level_set(ax=ax,obj_lists=scene_4_object)
+    cdf.plot_cdf(ax=ax,obj_lists=scene_5_target)
+    cdf.plot_0_level_set(ax=ax,obj_lists=scene_5_object)
     ax.legend()
-    plt.savefig(os.path.join(CUR_PATH,'cdf_scene4_target_with_obstacle_zeroset.png'), dpi=900, bbox_inches='tight')
+    plt.savefig(os.path.join(CUR_PATH,'cdf_scene5_target_with_obstacle_zeroset.png'), dpi=900, bbox_inches='tight')
     # # # plot gradient projection
-    # plot_projection(scene_4_target)
+    # plot_projection(scene_5_target)
     exit()
 
 
-    cdf.plot_sdf(ax=ax,obj_lists=scene_4_object+scene_4_target)
+    cdf.plot_sdf(ax=ax,obj_lists=scene_5_object+scene_5_target)
     plt.show()
     # # # plot the figure in the paper
-    plot_fig1(scene_4_object+scene_4_target)
+    plot_fig1(scene_5_object+scene_5_target)

@@ -47,10 +47,10 @@ class Circle:
         return circle
 
 class Box:
-    def __init__(self,center,w,h,attract = True, device='cpu'):
+    def __init__(self,center,width,height,attract = True, device='cpu'):
         self.center = center
-        self.w = w
-        self.h = h
+        self.w = width
+        self.h = height
         self.device = device
         self.attract = attract
 
