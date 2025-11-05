@@ -93,21 +93,25 @@ class Robot2D:
         Plot the trajectory of the robot given a joint angle trajectory.
 
         Args:
-            joint_trajectory: Tensor of shape (T, num_links), where T is the number of time steps.
+            joint_trajectory: Tensor of shape (B, T, num_links), where T is the number of time steps.
             n: Number of points to sample along each link for visualization.
         """
-        T = joint_trajectory.size(0)
+        B, T = joint_trajectory.size(0), joint_trajectory.size(1)
         all_kpts = []
+        # Create a color map for the trajectory
+        color_map = plt.get_cmap('viridis')
 
         for t in range(T):
-            x = joint_trajectory[t].unsqueeze(0)  # Shape (1, num_links)
-            kpts = self.surface_points_sampler(x, n=n).squeeze(0).cpu().numpy()
-            all_kpts.append(kpts)
+            x = joint_trajectory[:, t, :]
+            kpts = self.surface_points_sampler(x, n=n)
+            # kpts shape: (B, 2, n * num_links )
+            print(f'shape of kpts: {kpts.shape}')
+            kpts_np = kpts.reshape(-1, 2).cpu().numpy()
+            print(f'shape of kpts_np: {kpts_np.shape}')
 
-        all_kpts = np.concatenate(all_kpts, axis=0)  # Combine all time steps
-
-        # Plot the trajectory
-        ax.scatter(all_kpts[:, 0], all_kpts[:, 1], s=1, c='blue', label='Trajectory')
+            # Plot points for this timestep with a single color to avoid matplotlib `c` ambiguity
+            color = color_map(t / max(1, T - 1))
+            ax.scatter(kpts_np[:, 0], kpts_np[:, 1], s=1, color=color, label=None)
         ax.axis("equal")
         ax.set_title("Robot Trajectory")
         ax.set_xlabel("X")
