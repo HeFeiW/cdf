@@ -225,7 +225,7 @@ def solve_optimization_problem(n_dimensions, cons_u, B, targ_dist, targ_dist_gra
     # 其中 
     # H = (B^T * targ_dist_grad^T * targ_dist_grad * B) * dt^2 + R
     # h = 2 * B^T * targ_dist_grad^T * targ_dist * dt
-    # g(u) = -obs_dist_grad * u * dt - log(obs_dist + safety_buffer) <= 0
+    # g(u) = -obs_dist_grad * u * dt - log(obs_dist + 1- safety_buffer) <= 0
     np.random.seed(seed)
     n_controls = n_dimensions
     if cost_mat_R is None:
@@ -260,9 +260,9 @@ def solve_optimization_problem(n_dimensions, cons_u, B, targ_dist, targ_dist_gra
     g_2d = []
     
     # inequality constraints for the collision avoidance (避碰不等式约束)
-    # grad * u * dt <= log(dist + safety_buffer)
-    # 转换为标准形式: -grad * u * dt - log(dist + safety_buffer) <= 0
-    g_2d.append(-ca.mtimes(ca.mtimes(obs_dist_grad, U_2d), dt) - np.log(obs_dist + safety_buffer))
+    # grad * u * dt <= log(dist + 1- safety_buffer)
+    # 转换为标准形式: -grad * u * dt - log(dist + 1- safety_buffer) <= 0
+    g_2d.append(-ca.mtimes(ca.mtimes(obs_dist_grad, U_2d), dt) - np.log(obs_dist + 1 - safety_buffer))
 
     # Flatten constraints
     g_sys_vector = ca.vertcat(*g_2d)
@@ -278,7 +278,7 @@ def solve_optimization_problem(n_dimensions, cons_u, B, targ_dist, targ_dist_gra
     # QP structure
     qp_x = ca.reshape(U_2d, n_controls, 1)
     qp_2d = {'x': qp_x, 'f': obj_2d, 'g': g_sys_vector}
-
+    
     opts = {'print_time': 0, 'error_on_fail': False, 'verbose': False}
 
     # Create the solver
@@ -291,11 +291,13 @@ def solve_optimization_problem(n_dimensions, cons_u, B, targ_dist, targ_dist_gra
     elif solver == 'qrqp':
         solver_2d = ca.qpsol('solver', 'qrqp', qp_2d, opts)
     # Solve the problem
-    sol_2d = solver_2d(lbg=lbg, ubg=ubg)
+    sol_2d = solver_2d(lbg=lbg, ubg=ubg, lbx=lb_u, ubx=ub_u)
 
     # Extract the optimal solution
     opt_u_2d = sol_2d['x'][:].full().reshape(1, n_controls).T
-
+    # debug: 检查 constraints 对结果的影响
+    print('Optimal control input (opt_u_2d):', opt_u_2d.T)
+    print('Constraint values at optimal (g_sys_vector):', ca.evalf(ca.mtimes(obs_dist_grad, opt_u_2d) * dt + np.log(obs_dist + 1 - safety_buffer)).T)
     return opt_u_2d
 
 

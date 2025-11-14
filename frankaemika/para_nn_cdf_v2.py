@@ -224,6 +224,18 @@ class CDF_V2:
         x_batch, q_lib = x[idx], q[idx]
         q_batch = self.sample_q()   
         d, grad = self.decode_distance(q_batch, q_lib)
+        # 用decode_distance与distance_q对比
+        from parallel_data_generator import DataGenerator
+        data_gen = DataGenerator(device=self.device, paths=self.paths, robot=self.robot, 
+                                 serial_idx=self.serial_idx, with_base=self.use_base)
+        d_check = data_gen.distance_q(x_batch, q_batch)
+        diff = torch.abs(d - d_check)
+        if torch.max(diff) > 1e-3:
+            print('Warning: distance mismatch between decode_distance and distance_q')
+            print('Max difference:', torch.max(diff).item(), 'Average difference:', torch.mean(diff).item())
+            print('d from decode_distance:', torch.max(d).item(), torch.min(d).item(), torch.mean(d).item())
+            print('d from distance_q:', torch.max(d_check).item(), torch.min(d_check).item(), torch.mean(d_check).item())
+        exit()
         return x_batch, q_batch, d, grad
     
     def select_data_signed(self):
@@ -250,35 +262,30 @@ class CDF_V2:
             d: (batch_x, batch_q) - distances
             grad: (batch_x, batch_q, DoF) or (batch_x, batch_q, DoF+6) - gradients
         """
-        DoF = self.robot.serials[self.serial_idx].dof
-        if self.use_base:
-            # q_batch includes 6DoF base: (batch_q, DoF+6)
-            # For distance computation, we only use joint angles (not base)
-            q_joint = q_batch[:, :DoF]
-            total_dof = DoF + 6
-        else:
-            q_joint = q_batch
-            total_dof = DoF
-            
+        DoF = self.robot.serials[self.serial_idx].dof        
+        base_offset = 6 if self.use_base else 0
+
+        q_joint = q_batch[:, :DoF+base_offset]
+        total_dof = DoF + base_offset
+
         batch_x = q_lib.shape[0]
         batch_q = q_batch.shape[0]
         d_tensor = torch.ones(batch_x, batch_q, DoF).to(self.device) * torch.inf
         grad_tensor = torch.zeros(batch_x, batch_q, total_dof, DoF).to(self.device)
-        
         for i in range(DoF):
             # Extract joint angles from q_lib (first DoF dimensions)
             # q_lib shape: (batch_x, max_q_per_link, config_dim, DoF)
             # We want: (batch_x, max_q_per_link, i+1) for link i
-            q_lib_temp = q_lib[:, :, :i+1, i].reshape(batch_x*self.max_q_per_link, -1).unsqueeze(0).expand(batch_q, -1, -1)
-            q_joint_temp = q_joint[:, :i+1].unsqueeze(1).expand(-1, batch_x*self.max_q_per_link, -1)
+            q_lib_temp = q_lib[:, :, :i+base_offset+1, i].reshape(batch_x*self.max_q_per_link, -1).unsqueeze(0).expand(batch_q, -1, -1)
+            q_joint_temp = q_joint[:, :i+base_offset+1].unsqueeze(1).expand(-1, batch_x*self.max_q_per_link, -1)
             d_norm = torch.norm((q_joint_temp - q_lib_temp), dim=-1).reshape(batch_q, batch_x, self.max_q_per_link)
 
             d_norm_min, d_norm_min_idx = d_norm.min(dim=-1)
             grad = torch.autograd.grad(d_norm_min.reshape(-1), q_joint_temp, torch.ones_like(d_norm_min.reshape(-1)), 
                                       retain_graph=True)[0]
             grad_min_q = grad.reshape(batch_q, batch_x, self.max_q_per_link, -1).gather(
-                2, d_norm_min_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, i+1))[:, :, 0, :]
-            grad_tensor[:, :, :i+1, i] = grad_min_q.transpose(0, 1)
+                2, d_norm_min_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, i+base_offset+1))[:, :, 0, :]
+            grad_tensor[:, :, :i+base_offset+1, i] = grad_min_q.transpose(0, 1)
             d_tensor[:, :, i] = d_norm_min.transpose(0, 1)
 
         d, d_min_idx = d_tensor.min(dim=-1)
@@ -290,36 +297,44 @@ class CDF_V2:
         """
         Compute signed distance
         """
-        DoF = self.robot.serials[self.serial_idx].dof
-        if self.use_base:
-            q_joint = q_batch[:, :DoF]
-            total_dof = DoF + 6
-        else:
-            q_joint = q_batch
-            total_dof = DoF
+        # DoF = self.robot.serials[self.serial_idx].dof
+        # if self.use_base:
+        #     q_joint = q_batch[:, :DoF]
+        #     total_dof = DoF + 6
+        # else:
+        #     q_joint = q_batch
+        #     total_dof = DoF
             
-        batch_x = q_lib.shape[0]
-        batch_q = q_batch.shape[0]
-        d_tensor = torch.ones(batch_x, batch_q, DoF).to(self.device) * torch.inf
-        grad_tensor = torch.zeros(batch_x, batch_q, total_dof, DoF).to(self.device)
-        
-        for i in range(DoF):
-            q_lib_temp = q_lib[:, :, :i+1, i].reshape(batch_x*self.max_q_per_link, -1).unsqueeze(0).expand(batch_q, -1, -1)
-            q_joint_temp = q_joint[:, :i+1].unsqueeze(1).expand(-1, batch_x*self.max_q_per_link, -1)
-            d_norm = torch.norm((q_joint_temp - q_lib_temp), dim=-1).reshape(batch_q, batch_x, self.max_q_per_link)
-            d_norm_min, d_norm_min_idx = d_norm.min(dim=-1)
-            grad = torch.autograd.grad(d_norm_min.reshape(-1), q_joint_temp, torch.ones_like(d_norm_min.reshape(-1)), 
-                                      retain_graph=True)[0]
-            grad_min_q = grad.reshape(batch_q, batch_x, self.max_q_per_link, -1).gather(
-                2, d_norm_min_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, i+1))[:, :, 0, :]
-            grad_tensor[:, :, :i+1, i] = grad_min_q.transpose(0, 1)
-            d_tensor[:, :, i] = d_norm_min.transpose(0, 1)
+        # batch_x = q_lib.shape[0]
+        # batch_q = q_batch.shape[0]
+        # d_tensor = torch.ones(batch_x, batch_q, DoF).to(self.device) * torch.inf
+        # grad_tensor = torch.zeros(batch_x, batch_q, total_dof, DoF).to(self.device)
+        # print('shape of q_lib:', q_lib.shape)
+        # print('Dof:', DoF)
+        # exit()
+        # for i in range(DoF):
+        #     q_lib_temp = q_lib[:, :, :i+1, i].reshape(batch_x*self.max_q_per_link, -1).unsqueeze(0).expand(batch_q, -1, -1)
+        #     q_joint_temp = q_joint[:, :i+1].unsqueeze(1).expand(-1, batch_x*self.max_q_per_link, -1)
+        #     d_norm = torch.norm((q_joint_temp - q_lib_temp), dim=-1).reshape(batch_q, batch_x, self.max_q_per_link)
+        #     d_norm_min, d_norm_min_idx = d_norm.min(dim=-1)
+        #     grad = torch.autograd.grad(d_norm_min.reshape(-1), q_joint_temp, torch.ones_like(d_norm_min.reshape(-1)), 
+        #                               retain_graph=True)[0]
+        #     grad_min_q = grad.reshape(batch_q, batch_x, self.max_q_per_link, -1).gather(
+        #         2, d_norm_min_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, i+1))[:, :, 0, :]
+        #     grad_tensor[:, :, :i+1, i] = grad_min_q.transpose(0, 1)
+        #     d_tensor[:, :, i] = d_norm_min.transpose(0, 1)
             
-        d, d_min_idx = d_tensor.min(dim=-1)
+        # d, d_min_idx = d_tensor.min(dim=-1)
+        # d_ts = self.compute_sdf(x_batch, q_batch)
+        # mask = (d_ts < 0).transpose(0, 1)
+        # d[mask] = -d[mask]
+        # grad_final = grad_tensor.gather(3, d_min_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, total_dof, -1))[:, :, :, 0]
+        # grad_final[mask] = -grad_final[mask]
+        # 复用decode_distance函数
+        d, grad_final = self.decode_distance(q_batch, q_lib)
         d_ts = self.compute_sdf(x_batch, q_batch)
         mask = (d_ts < 0).transpose(0, 1)
         d[mask] = -d[mask]
-        grad_final = grad_tensor.gather(3, d_min_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, total_dof, -1))[:, :, :, 0]
         grad_final[mask] = -grad_final[mask]
         return d, grad_final
     
@@ -382,6 +397,7 @@ class CDF_V2:
                 base_max = serial.theta_max_base
             else:
                 # Default base limits if not defined
+                print('[Warning]: base limits not defined, using default base limits [-0.5,0.5] for translation and [-pi,pi] for rotation')
                 base_min = torch.tensor([-0.5, -0.5, -0.5, -PI, -PI, -PI]).to(self.device)
                 base_max = torch.tensor([0.5, 0.5, 0.5, PI, PI, PI]).to(self.device)
             
@@ -790,9 +806,6 @@ class CDF_V2:
             # 计算ground truth的距离和梯度
             torch.cuda.empty_cache()
             torch.cuda.reset_peak_memory_stats()
-            print(f"Allocated memory: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-            print(f"Reserved memory: {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
-            print(f"Free memory: {torch.cuda.memory_reserved() - torch.cuda.memory_allocated() / 1024**2:.2f} MB")
             gt_d = data_generator.distance_q(cube_points,q_sampled)
             print(f'gt_d.min:{gt_d.min()}, gt_d.max:{gt_d.max()},gt_d.mean:{gt_d.mean()}')
             # print(f'pred_d:{pred_d.shape}, gt_d:{gt_d.shape}')
@@ -855,7 +868,10 @@ class CDF_V2:
                 f'\nCube Position: {cube_points}' + \
                     f"q Sampled: {q_sampled[0].cpu().detach().numpy()}"
             plt.text(0.4, 0.95, text, horizontalalignment='left', verticalalignment='center', transform=plt.gca().transAxes, fontsize=10)
-            plt.savefig(os.path.join(CUR_PATH,f'slice_{cube_points}.png'))
+            save_path = os.path.join(CUR_PATH,f"{eval_joint_idx.item()}_{self.paths['model_dict'].split('.')[0].split('/')[-1]}")
+            if not os.path.exists(save_path):
+                os.makedirs(save_path)
+            plt.savefig(os.path.join(save_path,f"slice_{cube_points.cpu().detach().numpy()}.png"))
             # plt.show()
             # 计算MAE和RMSE
             pred_d = pred_d.squeeze(-1).reshape(-1).cpu().detach().numpy()

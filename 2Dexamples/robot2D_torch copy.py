@@ -106,7 +106,6 @@ class Robot2D:
         t = torch.linspace(0,1,n).unsqueeze(0).expand(self.B,-1).to(self.device)
         kpts_list = []
         for i in range (N-1):
-            # print(f_rob[:,:,i+1]-f_rob[:,:,i])
             kpts = torch.einsum('ij,ik->ijk',f_rob[:,:,i+1]-f_rob[:,:,i],t) + f_rob[:,:,i].unsqueeze(-1).expand(-1,-1,n)
             kpts_list.append(kpts)
         kpts = torch.cat(kpts_list,dim=-1).transpose(1,2)
@@ -127,11 +126,6 @@ if __name__ == "__main__":
     x = torch.tensor([[-1.6,-0.75]]) # Initial robot pose
     # x[1] = x[1] + np.pi
     rbt = Robot2D(num_joints=2,init_states = x,link_length=torch.tensor([[2,2]]).float())
-    # a = torch.rand(5)
-    # a.requires_grad =True
-    # print(x.shape)
-    # print(a.shape)
-    # f = rbt.forward_kinematics_any_point(x,a)
 
     kpts = rbt.surface_points_sampler(x).numpy()
     # plt.plot(rbt.f_rob[0,0,:], rbt.f_rob[0,1,:], color=str(0), linewidth=1) # Plot robot

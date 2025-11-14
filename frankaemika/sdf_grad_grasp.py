@@ -149,7 +149,7 @@ def main_loop():
                                 dt=0.01,
                                 cons_u=2.7,
                                 solver='ipopt',
-                                safety_buffer=0.7,
+                                safety_buffer=0.3,
                                 device=args.device)
             # debug: temporarily set full target joint positions as max joint positions
             xf_full = robot_layer.theta_max.unsqueeze(0).cpu().numpy()

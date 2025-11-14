@@ -11,6 +11,8 @@ import os
 import sys
 import torch
 import math
+import argparse
+
 import matplotlib.pyplot as plt
 from robot2D_torch import Robot2D
 from primitives2D_torch import Circle, Box
@@ -20,10 +22,13 @@ import math
 import robot_plot2D
 import copy
 import matplotlib.gridspec as gridspec
+import sys
+sys.path.append('../../RDF')
+from Siren import Siren
 
 PI = math.pi
 CUR_PATH = os.path.dirname(os.path.realpath(__file__))
-DATA_PATH = os.path.join(CUR_PATH,'data222.npy')
+DATA_PATH = os.path.join(CUR_PATH,'data.npy')
 
 class CDF2D:
     def __init__(self,device) -> None:
@@ -200,13 +205,18 @@ class CDF2D:
         def merge_repel_attract_d(d_repel,d_attract):
             # debugging
             # repel_d, attract_d: (N)
+            # # func0: d = d_attract - d_repel
+            # return d_attract - d_repel
+            # func1: d = d_attract + alpha/(clamp(d_repel, min=1e-3))
             alpha = 0.01
             d_repel = torch.clamp(d_repel,min=1e-3)
-            print('max and min of d_repel: ',torch.max(d_repel).item(),torch.min(d_repel).item())
             d = d_attract + alpha/d_repel
             return d
         def merge_repel_attract_grad(grad_repel,grad_attract):
             # repel_grad, attract_grad: (N,2)
+            # # func0: grad = grad_attract - grad_repel
+            # return grad_attract - grad_repel
+            # func1: grad = grad_attract - alpha/(clamp(d_repel, min=1e-3))**2 * grad_repel
             alpha = 0.01
             grad = grad_attract - alpha/(d_repel.unsqueeze(-1)+1e-6)**2 * grad_repel
             return grad
@@ -418,11 +428,9 @@ class CDF2D:
         Q_grid = self.create_2D_grid(self.nbData,idx_1,idx_2,values=[0.0 for _ in range(self.num_joints)]).to(self.device)
         # d = self.calculate_cdf(self.Q_grid,obj_lists,method).detach().cpu().numpy()
         d = self.combined_cdf(Q_grid,obj_lists,method).detach().cpu().numpy()
+        print(f'statistics of d: min {d.min()}, max {d.max()}, mean {d.mean()}')
         # debug 画图的时候d最大取到5，避免因为1/repel这种merge方式而导致图画出来看不出梯度变化
-        
-        print('before: max and min of cdf d: ',np.max(d),np.min(d))
         d = np.clip(d,-5,5)
-        print('after:  max and min of cdf d: ',np.max(d),np.min(d))
         ax.clear()
         ax.set_aspect('equal', 'box')  # Make sure the pixels are square
         ax.set_title('Configuration space', size=30)  # Add a title to your plot
@@ -437,6 +445,14 @@ class CDF2D:
         norm = plt.Normalize(vmin=vmin, vmax=vmax)
         ax.contour(q0, q1, d.reshape(self.nbData, self.nbData), levels=[0], linewidths=2, colors='black', alpha=1.0)
         ct = ax.contourf(q0, q1, d.reshape(self.nbData, self.nbData), levels=16, cmap='coolwarm', norm=norm)
+        # debug: 加入target & obstacle 0 level set
+        targ_list = [obj for obj in obj_lists if obj.attract]
+        obs_list = [obj for obj in obj_lists if not obj.attract]
+        d_targ = self.calculate_cdf(Q_grid,targ_list,method).detach().cpu().numpy()
+        ax.contour(q0, q1, d_targ.reshape(self.nbData, self.nbData), levels=[0], linewidths=2, colors='yellow', alpha=1.0)
+        d_obs = self.calculate_cdf(Q_grid,obs_list,method).detach().cpu().numpy()
+        ax.contour(q0, q1, d_obs.reshape(self.nbData, self.nbData), levels=[0], linewidths=2, colors='cyan', alpha=1.0)
+        fig = plt.gcf()  # Get the current figure
 
     def plot_0_level_set(self,ax,obj_lists,method='online_computation'):
         idx_1 = 0
@@ -445,9 +461,9 @@ class CDF2D:
         t2 = torch.linspace(self.q_min[idx_2],self.q_max[idx_2], self.nbData).cpu()
         self.q0,self.q1 = torch.meshgrid(t1,t2,indexing='ij')
         
-        self.Q_grid = self.create_2D_grid(self.nbData,idx_1,idx_2,values=[0.0 for _ in range(self.num_joints)]).to(self.device)
-        # d = self.calculate_cdf(self.Q_grid,obj_lists,method).detach().cpu().numpy()
-        d = self.combined_cdf(self.Q_grid,obj_lists,method).detach().cpu().numpy()
+        Q_grid = self.create_2D_grid(self.nbData,idx_1,idx_2,values=[0.0 for _ in range(self.num_joints)]).to(self.device)
+        # d = self.calculate_cdf(Q_grid,obj_lists,method).detach().cpu().numpy()
+        d = self.calculate_cdf(Q_grid,obj_lists,method).detach().cpu().numpy()
         ax.set_aspect('equal', 'box')  # Make sure the pixels are square
         ax.set_title('Configuration space', size=30)  # Add a title to your plot
         ax.set_xlabel('q1', size=20)
@@ -456,8 +472,9 @@ class CDF2D:
         ax.set_xlim(axis_limits)
         ax.set_ylim(axis_limits)
         ax.tick_params(axis='both', labelsize=20)
-        ax.contour(self.q0, self.q1, d.reshape(self.nbData, self.nbData), levels=[0], linewidths=2, colors='black', alpha=1.0)
-        
+        ax.contour(self.q0, self.q1, d.reshape(self.nbData, self.nbData), levels=[0], linewidths=2, colors='yellow', alpha=1.0)
+        print(f'statistics of d: min {d.min()}, max {d.max()}, mean {d.mean()}')
+        print(f'Plotted 0-level set of length of d: {d.shape}')
     def plot_objects(self,ax,obj_lists):
         for obj in obj_lists:
             # plt.gca().add_patch(obj.create_patch())
@@ -590,13 +607,147 @@ def plot_projection(obj_lists,filename):
                     bbox_inches='tight')
     fig1.savefig(os.path.join(CUR_PATH,f'image/{filename}_cdf.png'), dpi=300,
                     bbox_inches='tight')
+
+
+def plot_qp_planning(obj_lists, filename, model_path, q_start=None, q_goal=None, max_steps=200, noise_factor=0.0):
+    """
+    使用QP规划器进行轨迹规划并可视化
     
+    Args:
+        obj_lists: 障碍物和目标的列表 (包含Circle和Box对象)
+        filename: 保存文件名
+        q_start: 起始关节配置, 如果为None则随机生成
+        q_goal: 目标关节配置 (用于创建目标吸引力)
+        max_steps: 最大规划步数
+    """
+    from qp_mp_tao_2d import build_planner_2d
+    from mlp import MLPRegression
+    
+    # 分离障碍物和目标
+    obs_objs = [obj for obj in obj_lists if not obj.attract]
+    targ_objs = [obj for obj in obj_lists if obj.attract]
+    print(f"Number of obstacle objects: {len(obs_objs)}")
+    print(f"Number of target objects: {len(targ_objs)}")
+    
+    if os.path.exists(model_path):
+        print(f"Loading CDF model from {model_path}")
+        cdf_model = torch.load(model_path).to(device)
+    else:
+        print("Warning: No trained model found, training a new model from scratch.")
+        from nn_cdf import Train_CDF
+        train_cdf = Train_CDF(device)
+        train_cdf.train(input_dim=2+train_cdf.cdf.num_joints,
+              hidden_dim=[256, 256, 128, 128, 128], 
+              output_dim=1, 
+              activate=torch.nn.ReLU, 
+              batch_size=100,
+              learning_rate=0.01, 
+              weight_decay=1e-5, 
+              save_path=model_path,
+              device=device,
+          epochs=1000)
+        cdf_model = torch.load(model_path).to(device)
+    
+    # 创建QP规划器
+    planner = build_planner_2d(cdf.robot, cdf_model, device, dt=0.05, cons_u=1.0, 
+                               solver='ipopt', safety_buffer=0.1)
+    
+    # 设置起始配置
+    if q_start is None:
+        q_start = torch.tensor([-np.pi/2, np.pi/4]).to(device)
+    else:
+        q_start = torch.tensor(q_start).to(device)
+    
+    # 执行QP规划
+    print("Starting QP planning...")
+    rounds = 1
+    q_trajectories = []
+    for i in range(rounds):
+        q_trajectory = [q_start.detach().cpu().numpy()]
+        q_current = q_start.clone()
+        for step in range(max_steps-1):
+            # 执行一步规划
+            q_next = planner.step(q_current, obs_objs, targ_objs, noise_factor=noise_factor)
+
+            q_trajectory.append(q_next.detach().cpu().numpy())
+            
+            # 检查收敛
+            delta = torch.norm(q_next - q_current)
+            # if delta < 1e-3:
+            #     print(f"Converged at step {step}")
+            #     break
+            
+            
+            q_current = q_next
+            # if step % 20 == 0:
+                # print(f"Step {step}, delta: {delta:.6f}")
+        q_trajectories.append(np.array(q_trajectory))
+
+    q_trajectories = np.array(q_trajectories)  # (rounds, T, dof)
+    print(f"Planning finished with {len(q_trajectories)} rounds")
+
+    # 可视化
+    fig = plt.figure(figsize=(20, 8))
+    q_trajectory = np.concatenate(q_trajectories, axis=0)  # (rounds * T, dof)
+    print(f"Shape of concatenated trajectory: {q_trajectory.shape}")
+    # 子图1: C空间轨迹
+    ax1 = plt.subplot(1, 3, 1)
+    cdf.plot_cdf(ax=ax1, obj_lists=obj_lists)
+    ax1.plot(q_trajectory[:, 0], q_trajectory[:, 1], 'r-', linewidth=2, label='QP Trajectory')
+    ax1.plot(q_trajectory[0, 0], q_trajectory[0, 1], 'go', markersize=10, label='Start')
+    ax1.plot(q_trajectory[-1, 0], q_trajectory[-1, 1], 'r*', markersize=15, label='End')
+    ax1.set_title('QP Planning in Configuration Space', size=20)
+    ax1.legend()
+    plt.savefig(os.path.join(CUR_PATH, f'image/{filename}_qp_planning_cspace.png'), dpi=300, bbox_inches='tight')
+    
+    # 子图2: 任务空间轨迹
+    ax2 = plt.subplot(1, 3, 2)
+    cdf.plot_objects(ax2, obj_lists)
+    # 绘制机器人轨迹
+    q_traj_torch = torch.from_numpy(q_trajectory).float().to(device).unsqueeze(1)  # (T, 1, dof)
+    cdf.robot.plot_trajectory(ax=ax2, joint_trajectory=q_traj_torch)
+    
+    ax2.set_title('QP Planning in Task Space', size=20)
+    ax2.set_xlabel('x', size=16)
+    ax2.set_ylabel('y', size=16)
+    ax2.set_xlim(-4.0, 4.0)
+    ax2.set_ylim(-4.0, 4.0)
+    ax2.set_aspect('equal', 'box')
+    ax2.tick_params(axis='both', labelsize=16)
+    
+    # 子图3: 关节角度随时间变化
+    ax3 = plt.subplot(1, 3, 3)
+    for i in range(q_trajectories.shape[0]):
+        q_trajectory = q_trajectories[i]
+        time_steps = np.arange(len(q_trajectory))
+        color = plt.cm.viridis(i / (q_trajectories.shape[0]))
+        for j in range(q_trajectory.shape[1]):
+            ax3.plot(time_steps, q_trajectory[:, j], label=f'Joint {j+1}', linewidth=2, color=color, alpha=0.7)
+    ax3.set_xlabel('Time Step', size=16)
+    ax3.set_ylabel('Joint Angle [rad]', size=16)
+    ax3.set_title('Joint Angles vs Time', size=20)
+    ax3.legend()
+    ax3.grid(True)
+    ax3.tick_params(axis='both', labelsize=16)
+    
+    fig.tight_layout()
+    fig.savefig(os.path.join(CUR_PATH, f'image/{filename}_1qp_planning.png'), dpi=300, bbox_inches='tight')
+    print(f"Saved figure to image/{filename}_qp_planning.png")
+    
+    return q_trajectory
+
 
 if __name__ == "__main__":
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     # device = torch.device("cpu")
     cdf = CDF2D(device)
-    name = 'scene5'
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model_path', type=str, default='./model_dict/siren_model22.pth', help='Path to the trained CDF model')
+    parser.add_argument('--nf', type=float, default=0.0, help='Noise factor for QP planning')
+    args = parser.parse_args()
+
+    model_path = os.path.join(CUR_PATH, 'model_dict', args.model_path)
+    name = 'scene4'
     scene_4_object = [Box(center=torch.tensor([0.75,-1.5]).to(device),w=0.5,h=0.5,attract=False,device=device),
                 Box(center=torch.tensor([0.75, -2.5]).to(device),w=0.5,h=0.5,attract=False,device=device)]
     scene_4_target = [Box(center=torch.tensor([1.25,-1.5]).to(device),w=0.5,h=0.5,attract=True,device=device),
@@ -609,25 +760,49 @@ if __name__ == "__main__":
     # ax1 = plt.subplot(1, 3, 1)
     # ax2 = plt.subplot(1, 3, 2)
     # ax3 = plt.subplot(1, 3, 3)
-    # cdf.plot_cdf(ax=ax1,obj_lists=scene_5_object+scene_5_target)
+    # cdf.plot_cdf(ax=ax1,obj_lists=scene_4_object+scene_4_target)
     # ax1.set_title('CDF with both obstacles and targets', size=25)
-    # cdf.plot_cdf(ax=ax2,obj_lists=scene_5_object)
+    # cdf.plot_cdf(ax=ax2,obj_lists=scene_4_object)
     # ax2.set_title('CDF with only obstacles', size=25)
-    # cdf.plot_cdf(ax=ax3,obj_lists=scene_5_target)
+    # cdf.plot_cdf(ax=ax3,obj_lists=scene_4_target)
     # ax3.set_title('CDF with only targets', size=25)
     # plt.savefig(os.path.join(CUR_PATH,f'image/cdf_{name}_target.png'), dpi=900, bbox_inches='tight')
+    
     # # 画一张图，上面得cdf等高线是由scene4_traget决定的，同时用黑色标记出sence4_object的zero_level_set
     # plt.figure(figsize=(10,8))
     # ax = plt.gca()
-    # cdf.plot_cdf(ax=ax,obj_lists=scene_5_target)
-    # cdf.plot_0_level_set(ax=ax,obj_lists=scene_5_object)
+    # cdf.plot_cdf(ax=ax,obj_lists=scene_4_target)
+    # cdf.plot_0_level_set(ax=ax,obj_lists=scene_4_object)
     # ax.legend()
     # plt.savefig(os.path.join(CUR_PATH,f'image/cdf_{name}_target_with_obstacle_zeroset.png'), dpi=900, bbox_inches='tight')
-    # # # plot gradient projection
-    # plot_projection(scene_5_target)
+
+    # # plot gradient projection
+    # plot_projection(scene_4_target)
 
 
     # cdf.plot_sdf(ax=ax,obj_lists=scene_4_object+scene_4_target)
     # plt.show()
     # # # plot the figure in the paper
-    plot_projection(scene_5_object+scene_5_target,f'{name}_plot_projection')
+    # plot_projection(scene_4_object+scene_4_target,f'{name}_plot_projection')
+    
+    # Test QP planning
+    print("\n" + "="*60)
+    print("Testing QP Motion Planning with CDF")
+    print("="*60)
+    
+    # 创建一个简单的测试场景
+    test_obs = [Circle(center=torch.tensor([1.5, 0.5]).to(device), radius=0.3, attract=False, device=device),
+                Box(center=torch.tensor([0.5, -1.0]).to(device), w=0.4, h=0.4, attract=False, device=device)]
+    test_targ = [Circle(center=torch.tensor([2.0, -1.5]).to(device), radius=0.2, attract=True, device=device)]
+    
+    # 执行QP规划
+    try:
+        q_traj = plot_qp_planning(scene_4_object + scene_4_target, 'test_qp', 
+                                   q_start=[-np.pi+0.1, 2.2],
+                                   max_steps=300, noise_factor=args.nf,
+                                   model_path=model_path)
+        print(f"QP planning completed successfully with {len(q_traj)} steps")
+    except Exception as e:
+        print(f"QP planning failed: {e}")
+        import traceback
+        traceback.print_exc()

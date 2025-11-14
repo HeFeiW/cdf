@@ -24,6 +24,7 @@ class Robot2D:
         self.num_links = num_links
         self.init_states = init_states.to(self.device)
         self.link_lengths = link_lengths.to(self.device)
+        self.joint_limits = [[-np.pi, np.pi] for _ in range(num_links)]
         self.B = init_states.size(0)
         self.link_parent_map = link_parent_map if link_parent_map else {i: i - 1 for i in range(1, num_links)}
         if base_frame == 'default':
@@ -105,9 +106,7 @@ class Robot2D:
             x = joint_trajectory[:, t, :]
             kpts = self.surface_points_sampler(x, n=n)
             # kpts shape: (B, 2, n * num_links )
-            print(f'shape of kpts: {kpts.shape}')
             kpts_np = kpts.reshape(-1, 2).cpu().numpy()
-            print(f'shape of kpts_np: {kpts_np.shape}')
 
             # Plot points for this timestep with a single color to avoid matplotlib `c` ambiguity
             color = color_map(t / max(1, T - 1))

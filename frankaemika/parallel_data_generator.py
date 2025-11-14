@@ -214,29 +214,32 @@ class DataGenerator():
         Np = q.shape[0]
         if self.with_base:
             q_template, link_idx = self.given_x_find_q_with_pose(x)
+            # q_template: (Nq,dof+6), link_idx: (Nq)
         else:
             q_template, link_idx = self.given_x_find_q(x)
-
-        if link_idx.min() == 0:  # TODO why?
+        if link_idx.min() == 0 and not self.with_base :  # TODO why?
             return torch.zeros(Np).to(self.device)
         else:
             # link_idx[link_idx==7] = 6
             # link_idx[link_idx==8] = 7 #TODO why?
             d = torch.inf * torch.ones(Np, self.robot.dof).to(self.device)
+            base_offset = 6 if self.with_base else 0
             for i in range(link_idx.min(), link_idx.max() + 1):
                 mask = (link_idx == i)
-                d_norm = torch.norm(q[:, :i].unsqueeze(1) - q_template[mask][:, :i].unsqueeze(0), dim=-1)
+                d_norm = torch.norm(q[:, :i + base_offset].unsqueeze(1) - q_template[mask][:, :i + base_offset].unsqueeze(0), dim=-1)
                 if d_norm.shape[1] == 0:
-                    d[:, i - 1] = torch.inf
+                    d[:, i + base_offset - 1] = torch.inf
                 else:
-                    d[:, i - 1] = torch.min(d_norm, dim=-1)[0]
+                    d[:, i + base_offset - 1] = torch.min(d_norm, dim=-1)[0]
         d = torch.min(d, dim=-1)[0]
-
         # compute sign of d
-        d_ts = self.compute_sdf(x, q)
+        if self.with_base:
+            d_ts = self.compute_sdf_with_pose(x, q)
+        else:
+            d_ts = self.compute_sdf(x, q)
         mask = (d_ts < 0)
         d[mask] = -d[mask]
-        return d
+        return d # d: (Np)
 
     def projection(self, x, q):
         q.requires_grad = True

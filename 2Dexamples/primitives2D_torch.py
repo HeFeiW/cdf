@@ -47,10 +47,10 @@ class Circle:
         return circle
 
 class Box:
-    def __init__(self,center,width,height,attract = True, device='cpu'):
+    def __init__(self,center,w,h,attract = True, device='cpu'):
         self.center = center
-        self.w = width
-        self.h = height
+        self.w = w
+        self.h = h
         self.device = device
         self.attract = attract
 
@@ -74,7 +74,34 @@ class Box:
         h = self.h
         rect = patches.Rectangle(center-[w/2.0, h/2.0] , w, h, linewidth=1, edgecolor=color, facecolor='none')
         return rect
+    def sample_surface(self,N):
+        N_side = N // 4
+        xs = torch.linspace(-self.w/2., self.w/2., N_side).to(self.device)
+        ys = torch.linspace(-self.h/2., self.h/2., N_side).to(self.device)
+        top = torch.stack([xs, torch.ones(N_side).to(self.device)*(self.h/2.)], dim=1)
+        bottom = torch.stack([xs, -torch.ones(N_side).to(self.device)*(self.h/2.)], dim=1)
+        left = torch.stack([-torch.ones(N_side).to(self.device)*(self.w/2.), ys], dim=1)
+        right = torch.stack([torch.ones(N_side).to(self.device)*(self.w/2.), ys], dim=1)
+        pts = torch.cat([top, bottom, left, right], dim=0)
+        pts = pts + self.center.unsqueeze(0).expand(pts.size(0),-1)
+        return pts
 
+class Point_set:
+    def __init__(self,points):
+        self.points = torch.tensor(points, dtype=torch.float)
+    def signed_distance(self,p):
+        N = p.size(0)
+        dist = torch.norm(p.unsqueeze(1).expand(-1,self.points.size(0),-1) - self.points.unsqueeze(0).expand(N,-1,-1),dim=-1)
+        d,idx = torch.min(dist,dim=-1)
+        return d.unsqueeze(-1)
+    def normal(self,p):
+        d = self.signed_distance(p)
+        grad = torch.autograd.grad(d.sum(), p, create_graph=True, retain_graph=True)[0]
+        n = torch.nn.functional.normalize(grad,dim = -1)
+        return n
+    def sample_surface(self,N):
+        idx = torch.randint(0,self.points.size(0),(N,))
+        return self.points[idx,:]
 class Triangle:
     def __init__(self,p0,p1,p2):
         self.p0 = torch.tensor(p0, dtype=torch.float)
@@ -367,15 +394,6 @@ def plot_sdf_contour(sdf, xlim=(0, 1), ylim=(0, 1), delta=0.01, level_step=0.1, 
 # plot_sdf_contour(box, xlim=(0.5, 1), ylim=(0.5, 1), delta=0.01)
 
 if __name__ == "__main__":
-
-    # obj = Circle(center=[0,0],radius=[1])
-    # p = torch.ones(3,2)
-    # p[2] +=1.
-    # p.requires_grad = True
-    # print(p.shape)
-    # print(obj.signed_distance(p).shape)
-    # print(obj.normal(p).shape)
-
     box = Box(center=torch.tensor([0.6,0.5]),w=0.1,h=0.4)
     print(box.signed_distance(torch.tensor([0.6,0.6])))
     box2 = Box(center=torch.tensor([0.4,0.5]),w=0.1,h=0.4)

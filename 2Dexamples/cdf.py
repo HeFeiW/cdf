@@ -23,20 +23,21 @@ import matplotlib.gridspec as gridspec
 
 PI = math.pi
 CUR_PATH = os.path.dirname(os.path.realpath(__file__))
-DATA_PATH = os.path.join(CUR_PATH,'data2D_tree.npy')
+DATA_PATH = os.path.join(CUR_PATH,'data22.npy')
 
 class CDF2D:
-    def __init__(self,device) -> None:
+    def __init__(self,device, model_type='mlp') -> None:
         self.device = device    
         self.nbData =  50
         self.nbDiscretization = 50
-        
-        self.link_length = torch.tensor([[2, 2, 1, 1]]).float().to(device)
+        self.model_type = model_type
+        # self.link_length = torch.tensor([[2, 2, 1, 1]]).float().to(device)
+        self.link_length = torch.tensor([[2, 2]]).float().to(device)
         self.link_parent_map = {
             1: 0,  # Link 1 connects to the base
             2: 1,  # Link 2 connects to Link 1
-            3: 2,  # Link 3 connects to Link 2
-            4: 2   # Link 4 connects to Link 2
+            # 3: 2,  # Link 3 connects to Link 2
+            # 4: 2   # Link 4 connects to Link 2
         }
         self.num_joints = self.link_length.size(1)
         self.q_max = torch.tensor([PI]).expand(self.num_joints).to(device)
@@ -68,11 +69,10 @@ class CDF2D:
     def create_grid_dof(self,nb_data,dof):
         # 把create_grid的numpy版本改成dof维度
         # 返回一个形状为(nb_data**dof,dof)的数组
-        print(f'dof: {dof}, nb_data: {nb_data}')
         q_list = []
         t = np.linspace(self.q_min.cpu().numpy(),self.q_max.cpu().numpy(), nb_data)
         for i in range(dof):
-            q_list.append(t[i])
+            q_list.append(t[:,i])
         mesh = np.meshgrid(*q_list)
         Q_sets = np.stack(mesh,axis=-1).reshape(-1,dof)
         return Q_sets
@@ -163,7 +163,7 @@ class CDF2D:
 
         data = {}
         for i,_p in enumerate(p):
-            grids = [Circle(center=_p,radius=0.001,device=device)]
+            grids = [Circle(center=_p,radius=0.001,device=self.device)]
             q = self.find_q(grids)[1]
             data[i] = {# 1个grid对应1个p，多个q
                 'p':_p,
@@ -211,10 +211,9 @@ class CDF2D:
             dist = torch.norm(q.unsqueeze(1) - self.q_list_template.to(self.device).unsqueeze(0),dim=-1)
             print('shape of dist: ',dist.shape)
         if method == 'online_computation':
-            if not hasattr(self,'q_0_level_set'):
-                self.q_0_level_set = self.find_q(obj_lists)[1]
-            print('shape of q_0_level_set: ',self.q_0_level_set.shape)
-            dist = torch.norm(q.unsqueeze(1) - self.q_0_level_set.unsqueeze(0),dim=-1)
+            q_0_level_set = self.find_q(obj_lists)[1]
+            print('shape of q_0_level_set: ',q_0_level_set.shape)
+            dist = torch.norm(q.unsqueeze(1) - q_0_level_set.unsqueeze(0),dim=-1)
         # 取每个q点到所有障碍物表面点的最小距离
         d = torch.min(dist,dim=-1)[0]
         # compute sign of d, based on the sdf
@@ -341,9 +340,12 @@ class CDF2D:
         ax.set_xlim(axis_limits)
         ax.set_ylim(axis_limits)
         ax.tick_params(axis='both', labelsize=20)
-        q0, q1 = self.Q_grid[:,0].detach().cpu().numpy(), self.Q_grid[:,1].detach().cpu().numpy()
-        ax.contour(q0, q1, d.reshape(self.nbData, self.nbData), levels=[0], linewidths=6, colors='black', alpha=1.0)
-        ct = ax.contourf(q0, q1, d.reshape(self.nbData, self.nbData), levels=8, linewidths=1, cmap='coolwarm')
+        # Reshape q0, q1 to 2D grid for contour plotting
+        q0 = self.Q_grid[:,0].detach().cpu().numpy().reshape(self.nbData, self.nbData)
+        q1 = self.Q_grid[:,1].detach().cpu().numpy().reshape(self.nbData, self.nbData)
+        d_grid = d.reshape(self.nbData, self.nbData)
+        ax.contour(q0, q1, d_grid, levels=[0], linewidths=6, colors='black', alpha=1.0)
+        ct = ax.contourf(q0, q1, d_grid, levels=8, linewidths=1, cmap='coolwarm')
         ax.clabel(ct, inline=False, fontsize=15, colors='black', fmt='%.1f')
 
 
