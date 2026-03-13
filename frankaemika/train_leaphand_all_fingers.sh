@@ -35,59 +35,59 @@ python3 para_nn_cdf_v2.py \
     --max_q_per_link $MAX_Q_PER_LINK \
     --with_writer
 
-# Train finger 1
-echo "==================================="
-echo "Training Finger 1 (Middle finger)..."
-echo "==================================="
-python3 para_nn_cdf_v2.py \
-    --train \
-    --use_base \
-    --robot leaphand \
-    --serial_idx 1 \
-    --network_type $NETWORK_TYPE \
-    --data_path data_with_base_dof_1.npy \
-    --model_dict leaphand_finger1_${NETWORK_TYPE}_base.pt \
-    --epoches $EPOCHS \
-    --batch_x $BATCH_X \
-    --batch_q $BATCH_Q \
-    --max_q_per_link $MAX_Q_PER_LINK \
-    --with_writer
+# # Train finger 1
+# echo "==================================="
+# echo "Training Finger 1 (Middle finger)..."
+# echo "==================================="
+# python3 para_nn_cdf_v2.py \
+#     --train \
+#     --use_base \
+#     --robot leaphand \
+#     --serial_idx 1 \
+#     --network_type $NETWORK_TYPE \
+#     --data_path data_with_base_dof_1.npy \
+#     --model_dict leaphand_finger1_${NETWORK_TYPE}_base.pt \
+#     --epoches $EPOCHS \
+#     --batch_x $BATCH_X \
+#     --batch_q $BATCH_Q \
+#     --max_q_per_link $MAX_Q_PER_LINK \
+#     --with_writer
 
-# Train finger 2
-echo "==================================="
-echo "Training Finger 2 (Ring finger)..."
-echo "==================================="
-python3 para_nn_cdf_v2.py \
-    --train \
-    --use_base \
-    --robot leaphand \
-    --serial_idx 2 \
-    --network_type $NETWORK_TYPE \
-    --data_path data_with_base_dof_2.npy \
-    --model_dict leaphand_finger2_${NETWORK_TYPE}_base.pt \
-    --epoches $EPOCHS \
-    --batch_x $BATCH_X \
-    --batch_q $BATCH_Q \
-    --max_q_per_link $MAX_Q_PER_LINK \
-    --with_writer
+# # Train finger 2
+# echo "==================================="
+# echo "Training Finger 2 (Ring finger)..."
+# echo "==================================="
+# python3 para_nn_cdf_v2.py \
+#     --train \
+#     --use_base \
+#     --robot leaphand \
+#     --serial_idx 2 \
+#     --network_type $NETWORK_TYPE \
+#     --data_path data_with_base_dof_2.npy \
+#     --model_dict leaphand_finger2_${NETWORK_TYPE}_base.pt \
+#     --epoches $EPOCHS \
+#     --batch_x $BATCH_X \
+#     --batch_q $BATCH_Q \
+#     --max_q_per_link $MAX_Q_PER_LINK \
+#     --with_writer
 
-# Train finger 3
-echo "==================================="
-echo "Training Finger 3 (Thumb)..."
-echo "==================================="
-python3 para_nn_cdf_v2.py \
-    --train \
-    --use_base \
-    --robot leaphand \
-    --serial_idx 3 \
-    --network_type $NETWORK_TYPE \
-    --data_path data_with_base_dof_3.npy \
-    --model_dict leaphand_finger3_${NETWORK_TYPE}_base.pt \
-    --epoches $EPOCHS \
-    --batch_x $BATCH_X \
-    --batch_q $BATCH_Q \
-    --max_q_per_link $MAX_Q_PER_LINK \
-    --with_writer
+# # Train finger 3
+# echo "==================================="
+# echo "Training Finger 3 (Thumb)..."
+# echo "==================================="
+# python3 para_nn_cdf_v2.py \
+#     --train \
+#     --use_base \
+#     --robot leaphand \
+#     --serial_idx 3 \
+#     --network_type $NETWORK_TYPE \
+#     --data_path data_with_base_dof_3.npy \
+#     --model_dict leaphand_finger3_${NETWORK_TYPE}_base.pt \
+#     --epoches $EPOCHS \
+#     --batch_x $BATCH_X \
+#     --batch_q $BATCH_Q \
+#     --max_q_per_link $MAX_Q_PER_LINK \
+#     --with_writer
 
 echo "==================================="
 echo "All fingers trained successfully!"

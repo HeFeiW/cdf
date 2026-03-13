@@ -1,0 +1,4 @@
+x: <class 'torch.Tensor'>, shape: torch.Size([8000, 3])
+q: <class 'torch.Tensor'>, shape: torch.Size([8000, 100, 10, 4])
+q min: -3.141592264175415, q max: inf
+k: <class 'torch.Tensor'>, shape: torch.Size([8000])

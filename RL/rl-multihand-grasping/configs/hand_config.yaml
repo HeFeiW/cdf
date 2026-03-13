@@ -1,0 +1,79 @@
+# LeapHand 配置文件
+# Hand configuration for LeapHand model
+
+# 手部基本信息
+hand:
+  urdf_path: "hand_models/leaphand/leap_hand_left.urdf"
+  name: "LeapHand"
+  
+# 关节配置 (22 DoF: 6 base + 16 finger joints)
+joints:
+  # 基座自由度 (6 DoF)
+  base_dof: 6
+  base_names:
+    - "base_x"
+    - "base_y" 
+    - "base_z"
+    - "base_roll"
+    - "base_pitch"
+    - "base_yaw"
+  
+  # 基座关节限制
+  base_limits:
+    position:
+      lower: [-0.5, -0.5, 0.3, -3.14159, -3.14159, -3.14159]
+      upper: [0.5, 0.5, 0.8, 3.14159, 3.14159, 3.14159]
+    velocity: [1.0, 1.0, 1.0, 2.0, 2.0, 2.0]
+  
+  # 手指自由度 (16 DoF: 4 fingers × 4 joints)
+  finger_dof: 16
+  finger_names:
+    # 拇指 (4 joints)
+    - "thumb_base"
+    - "thumb_proximal"
+    - "thumb_middle"
+    - "thumb_distal"
+    # 食指 (4 joints)
+    - "index_base"
+    - "index_proximal"
+    - "index_middle"
+    - "index_distal"
+    # 中指 (4 joints)
+    - "middle_base"
+    - "middle_proximal"
+    - "middle_middle"
+    - "middle_distal"
+    # 无名指 (4 joints)
+    - "ring_base"
+    - "ring_proximal"
+    - "ring_middle"
+    - "ring_distal"
+  
+  # 手指关节限制 (每个手指4个关节)
+  finger_limits:
+    position:
+      lower: [0.0, 0.0, 0.0, 0.0]  # 每个关节的下限
+      upper: [1.57, 1.57, 1.57, 1.57]  # 每个关节的上限 (约90度)
+    velocity: [2.0, 2.0, 2.0, 2.0]  # 每个关节的速度限制
+
+# 指尖配置
+fingertips:
+  link_names:
+    - "thumb_tip"
+    - "index_tip"
+    - "middle_tip"
+    - "ring_tip"
+  
+# 控制配置
+control:
+  position_gain: 0.1             # 位置增益
+  velocity_gain: 0.01            # 速度增益
+  max_force: 50.0                # 最大力矩
+
+# 初始姿态
+initial_pose:
+  base: [0.0, 0.0, 0.5, 0.0, 0.0, 0.0]  # [x, y, z, roll, pitch, yaw]
+  fingers: [0.0, 0.3, 0.3, 0.3,         # 拇指
+            0.0, 0.3, 0.3, 0.3,         # 食指
+            0.0, 0.3, 0.3, 0.3,         # 中指
+            0.0, 0.3, 0.3, 0.3]         # 无名指

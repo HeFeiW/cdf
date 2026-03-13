@@ -23,7 +23,7 @@ import matplotlib.gridspec as gridspec
 
 PI = math.pi
 CUR_PATH = os.path.dirname(os.path.realpath(__file__))
-DATA_PATH = os.path.join(CUR_PATH,'data22.npy')
+DATA_PATH = os.path.join(CUR_PATH,'data/data22.npy')
 
 class CDF2D:
     def __init__(self,device, model_type='mlp') -> None:
@@ -195,7 +195,8 @@ class CDF2D:
         # q : (Np,2)
         # return d : (Np) distance between q and x in C space. d = min_{q*}{L2(q-q*)}. sdf(x,q*)=0
         Np = q.shape[0]
-        if method == None:
+        if method == None or method not in ['offline_grid','online_computation']:
+            print('Invalid method for calculate_cdf! Set to online_computation by default.')
             method = 'online_computation'
         if method == 'offline_grid':
             if not hasattr(self,'q_list_template'):
@@ -209,10 +210,14 @@ class CDF2D:
                 self.q_list_template = q_list_template[q_list_template[:,0] != torch.inf]
             # 计算q和q_list_template之间的距离矩阵
             dist = torch.norm(q.unsqueeze(1) - self.q_list_template.to(self.device).unsqueeze(0),dim=-1)
-            print('shape of dist: ',dist.shape)
+
         if method == 'online_computation':
             q_0_level_set = self.find_q(obj_lists)[1]
-            print('shape of q_0_level_set: ',q_0_level_set.shape)
+            if q_0_level_set.shape[0] == 0:
+                print('No valid q found on the obstacle surface!')
+                if return_grad:
+                    return torch.full((Np,),float('inf')).to(self.device), torch.zeros_like(q)
+                return torch.full((Np,),float('inf')).to(self.device)
             dist = torch.norm(q.unsqueeze(1) - q_0_level_set.unsqueeze(0),dim=-1)
         # 取每个q点到所有障碍物表面点的最小距离
         d = torch.min(dist,dim=-1)[0]
@@ -331,7 +336,6 @@ class CDF2D:
 
     def plot_cdf(self,ax,obj_lists,method='online_computation'):
         d = self.calculate_cdf(self.Q_grid,obj_lists,method).detach().cpu().numpy()
-        print('shape of d:{}'.format(d.shape))
         ax.set_aspect('equal', 'box')  # Make sure the pixels are square
         ax.set_title('Configuration space', size=30)  # Add a title to your plot
         ax.set_xlabel('q1', size=20)

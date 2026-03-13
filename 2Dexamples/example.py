@@ -28,7 +28,7 @@ from Siren import Siren
 
 PI = math.pi
 CUR_PATH = os.path.dirname(os.path.realpath(__file__))
-DATA_PATH = os.path.join(CUR_PATH,'data.npy')
+DATA_PATH = os.path.join(CUR_PATH,'data/data.npy')
 
 class CDF2D:
     def __init__(self,device) -> None:
@@ -633,7 +633,7 @@ def plot_qp_planning(obj_lists, filename, model_path, q_start=None, q_goal=None,
         print(f"Loading CDF model from {model_path}")
         cdf_model = torch.load(model_path).to(device)
     else:
-        print("Warning: No trained model found, training a new model from scratch.")
+        print(f"[Warning]: No trained model found at {model_path}, training a new model from scratch.")
         from nn_cdf import Train_CDF
         train_cdf = Train_CDF(device)
         train_cdf.train(input_dim=2+train_cdf.cdf.num_joints,
@@ -699,6 +699,7 @@ def plot_qp_planning(obj_lists, filename, model_path, q_start=None, q_goal=None,
     ax1.set_title('QP Planning in Configuration Space', size=20)
     ax1.legend()
     plt.savefig(os.path.join(CUR_PATH, f'image/{filename}_qp_planning_cspace.png'), dpi=300, bbox_inches='tight')
+    print(f"Saved figure to image/{filename}_qp_planning_cspace.png")
     
     # 子图2: 任务空间轨迹
     ax2 = plt.subplot(1, 3, 2)
@@ -742,16 +743,16 @@ if __name__ == "__main__":
     # device = torch.device("cpu")
     cdf = CDF2D(device)
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_path', type=str, default='./model_dict/siren_model22.pth', help='Path to the trained CDF model')
+    parser.add_argument('--model_path', type=str, default='siren_lr1e4_eik1_ep5000_model22.pth', help='Path to the trained CDF model')
     parser.add_argument('--nf', type=float, default=0.0, help='Noise factor for QP planning')
     args = parser.parse_args()
 
     model_path = os.path.join(CUR_PATH, 'model_dict', args.model_path)
     name = 'scene4'
     scene_4_object = [Box(center=torch.tensor([0.75,-1.5]).to(device),w=0.5,h=0.5,attract=False,device=device),
-                Box(center=torch.tensor([0.75, -2.5]).to(device),w=0.5,h=0.5,attract=False,device=device)]
-    scene_4_target = [Box(center=torch.tensor([1.25,-1.5]).to(device),w=0.5,h=0.5,attract=True,device=device),
-                Box(center=torch.tensor([1.25, -2.5]).to(device),w=0.5,h=0.5,attract=True,device=device)]
+                Box(center=torch.tensor([0.75, -2.75]).to(device),w=0.5,h=0.5,attract=False,device=device)]
+    scene_4_target = [Box(center=torch.tensor([1.5,-1.5]).to(device),w=0.5,h=0.5,attract=True,device=device),
+                Box(center=torch.tensor([1.5, -2.75]).to(device),w=0.5,h=0.5,attract=True,device=device)]
 
     scene_5_object = [Box(center=torch.tensor([2.0, 2.0]).to(device),w=0.5,h=0.5,attract=False,device=device)]
     scene_5_target = [Circle(center=torch.tensor([0.0,-2.25]).to(device),radius=0.25,attract=True,device=device)]
@@ -798,8 +799,8 @@ if __name__ == "__main__":
     # 执行QP规划
     try:
         q_traj = plot_qp_planning(scene_4_object + scene_4_target, 'test_qp', 
-                                   q_start=[-np.pi+0.1, 2.2],
-                                   max_steps=300, noise_factor=args.nf,
+                                   q_start=[-2.0, -2.0],
+                                   max_steps=1000, noise_factor=args.nf,
                                    model_path=model_path)
         print(f"QP planning completed successfully with {len(q_traj)} steps")
     except Exception as e:

@@ -1,0 +1,69 @@
+# PPO 训练配置文件
+# PPO configuration for training
+
+# PPO 核心参数
+ppo:
+  gamma: 0.99                    # 折扣因子
+  gae_lambda: 0.95               # GAE lambda
+  clip_ratio: 0.2                # PPO clip 比率
+  value_loss_coef: 0.5           # value loss 系数
+  entropy_coef: 0.01             # 熵正则化系数
+  max_grad_norm: 0.5             # 梯度裁剪
+
+# 优化器参数
+optimizer:
+  learning_rate: 3.0e-4          # 学习率
+  adam_eps: 1.0e-5               # Adam epsilon
+  weight_decay: 0.0              # 权重衰减
+
+# 训练参数
+training:
+  total_timesteps: 10000000      # 总训练步数
+  num_envs: 4                    # 并行环境数
+  steps_per_update: 64         # 每次更新的步数
+  num_epochs: 10                 # 每次更新的 epoch 数
+  batch_size: 256                # mini-batch 大小
+  normalize_advantage: true      # 是否归一化优势
+  
+# 网络结构
+network:
+  # PointNet 编码器
+  pointnet:
+    input_dim: 4                 # 输入维度 (x, y, z, label)
+    hidden_dims: [64, 128, 256]  # 隐藏层维度
+    output_dim: 256              # 输出特征维度
+    use_batch_norm: true         # 是否使用 BatchNorm
+    
+  # 关节编码器
+  joint_encoder:
+    input_dim: 22                # 输入维度 (22 DoF)
+    hidden_dims: [64, 64]        # 隐藏层维度
+    output_dim: 64               # 输出特征维度
+    
+  # Actor 网络
+  actor:
+    hidden_dims: [256, 128]      # 隐藏层维度
+    output_dim: 22               # 输出维度 (Δq)
+    log_std_min: -20             # log_std 下限
+    log_std_max: 2               # log_std 上限
+    
+  # Critic 网络
+  critic:
+    hidden_dims: [256, 128]      # 隐藏层维度
+    output_dim: 1                # 输出维度 (V(s))
+
+# 日志与保存
+logging:
+  log_interval: 10               # 日志间隔 (更新次数)
+  save_interval: 100             # 保存间隔 (更新次数)
+  eval_interval: 50              # 评估间隔 (更新次数)
+  num_eval_episodes: 10          # 评估 episode 数
+  
+# 检查点
+checkpoint:
+  save_path: "checkpoints/"      # 保存路径
+  resume: false                  # 是否恢复训练
+  resume_path: ""                # 恢复路径
+
+# 随机种子
+seed: 42

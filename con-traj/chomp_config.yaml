@@ -1,0 +1,56 @@
+# CHOMP Optimizer Configuration
+
+# Trajectory parameters
+trajectory:
+  num_points: 1000          # Number of trajectory waypoints (T)
+  dimensions: 2              # Configuration space dimensions (D)
+  time_step: 0.001          # Time step between waypoints (dt = 1.0 / (T - 1) if null)
+
+# Start and goal positions
+task:
+  start: [0.1, 0.1]         # Start position
+  goal: [0.4, 0.9]          # Goal position
+
+# Obstacle configuration
+obstacles:
+  clearance: 0.04           # Minimum desired clearance from obstacles
+  shapes:
+    - type: circle
+      center: [0.2, 0.4]
+      radius: 0.1
+    - type: circle
+      center: [0.4, 0.6]
+      radius: 0.1
+    # - type: box
+    #   center: [0.7, 0.3]
+    #   width: 0.2
+    #   height: 0.2
+    # - type: segment
+    #   point_a: [0.2, 0.8]
+    #   point_b: [0.8, 0.6]
+    #   radius: 0.03
+
+# Smoothness cost parameters
+smoothness:
+  velocity_weight: 1.0      # Weight for velocity (first-order) cost
+  acceleration_weight: 1.0  # Weight for acceleration (second-order) cost
+  damping: 1.0e-4           # Regularization damping for matrix inversion
+
+# Obstacle cost parameters
+obstacle_cost:
+  weight: 0.1               # Weight for obstacle cost relative to smoothness
+
+# Optimizer parameters
+optimizer:
+  step_size: 0.001          # Gradient descent step size
+  num_iterations: 100       # Number of optimization iterations
+
+# Visualization parameters
+visualization:
+  plot_xlim: [0.0, 1.0]     # X-axis limits for plotting
+  plot_ylim: [0.0, 1.0]     # Y-axis limits for plotting
+  save_trajectory_plot: true
+  trajectory_plot_name: "chomp_2d_result.png"
+  save_gradient_plot: true
+  gradient_plot_name: "chomp_2d_final_gradients.png"
+  gradient_scale_factor: 5  # Scaling factor for gradient visualization

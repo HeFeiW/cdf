@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -----------------------------------------------------------------------------
 # Test script for QP motion planner in 2D
+# usage: python test_qp_planner.py
 # -----------------------------------------------------------------------------
 
 import numpy as np
@@ -38,7 +39,7 @@ def test_qp_planner_simple():
     print(f"Created robot with {robot.num_links} links")
     
     # 创建一个简单的MLP模型 (或加载训练好的模型)
-    model_path = os.path.join(CUR_PATH, 'model/model.pth')
+    model_path = os.path.join(CUR_PATH, 'model/siren_lr1e4_eik1_ep5000_model22.pth')
     if os.path.exists(model_path):
         print(f"Loading trained model from {model_path}")
         cdf_model = torch.load(model_path).to(device)
@@ -98,6 +99,7 @@ def test_qp_planner_simple():
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
     
     # C空间轨迹
+    print(f'shape of q_trajectory: {q_trajectory.shape}')
     ax1.plot(q_trajectory[:, 0], q_trajectory[:, 1], 'b-o', markersize=3, linewidth=1.5)
     ax1.plot(q_trajectory[0, 0], q_trajectory[0, 1], 'go', markersize=10, label='Start')
     ax1.plot(q_trajectory[-1, 0], q_trajectory[-1, 1], 'r*', markersize=15, label='End')
@@ -169,7 +171,7 @@ def test_qp_planner_with_cdf():
                                    solver='ipopt', safety_buffer=0.05)
         
         # 执行规划
-        q_start = torch.tensor([-PI/3, PI/6]).to(device)
+        q_start = torch.tensor([0.0, 1.0]).to(device)
         q_trajectory = [q_start.cpu().numpy()]
         q_current = q_start.clone()
         
@@ -269,8 +271,11 @@ if __name__ == '__main__':
     print("All tests completed!")
     print("="*60)
     
-    # Show plots if available
+    # Show plots if available, set timeout to prevent hanging
+    timeout = 30  # seconds
     try:
-        plt.show()
-    except:
-        pass
+        plt.show(block=False)
+        plt.pause(timeout)
+        plt.close('all')
+    except Exception as e:
+        print(f"Error showing plots: {e}")

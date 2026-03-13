@@ -22,7 +22,7 @@ import argparse
 import time
 import math
 import copy
-import utils
+import rdf_utils as utils
 PI = math.pi
 
 class DataGenerator():
@@ -284,7 +284,7 @@ def analysis_data(x):
 if __name__ == "__main__":
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     parser = argparse.ArgumentParser()
-    parser.add_argument('--robot', default='panda', type=str, choices=['panda', 'leaphand', 'dexhand'])
+    parser.add_argument('--robot', default='panda', type=str, choices=['panda', 'leaphand', 'dexhand','leap'])
     args = parser.parse_args()
 
     robot = args.robot
@@ -296,6 +296,9 @@ if __name__ == "__main__":
         'model': os.path.join(CUR_DIR, f'../../RDF/models/{args.robot}/BP_8.pt'),
         'data': os.path.join(CUR_DIR, f'data/{args.robot}/data.pt'),
     }
+    if args.robot == 'leap':
+        paths['meshes'] = os.path.join(CUR_DIR, f'../../RDF/descriptions/{args.robot}/meshes/visual/*.glb')
+        paths['model'] = os.path.join(CUR_DIR, f'../../RDF/models/{args.robot}/leap_siren.pth')
     parallel_robot = ParallelRobotLayer(device=device, robot=robot, paths=paths)
     for i, serial_robot in enumerate(parallel_robot.serials):
     # x = torch.tensor([[0.5,0.5,0.5]]).to(device)

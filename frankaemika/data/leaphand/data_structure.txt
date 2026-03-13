@@ -1,0 +1,20 @@
+- data_with_base_dof_0.npy
+  - A numpy file containing data of q at each x grid point, with base dof. chosen finger is finger_0, i.e., thumb.
+  - structure:
+    - key: grid point index (int)(0~grid_num^3-1=7999)
+      - 'idx': indices of the link in contact(numpy array of shape (M,)), M is number of valid contact configurations at this grid point
+      - 'x': x coordinates of data points (numpy array of shape (3,)), representing the position in 3D space
+      - 'q': joint configurations corresponding to x (numpy array of shape (M, dof + base_dof)), where dof is the number of robot joints and base_dof is the number of base degrees of freedom. for each finger of leaphand, dof=4, base_dof=6, so shape is (M, 10)
+  - Note: 
+      - base_dof=6 corresponds to the 6-DOF pose of the robot base in space (3 for position and 3 for orientation).
+      - some grid points may have no valid contact configurations, in that case, 'idx' and 'q' will be empty arrays.
+- data_with_base_dof_1~3.npy
+  - Similar to data_with_base_dof_0.npy, but with chosen finger being finger_1, finger_2, and finger_3 respectively. i.e., index 1,2,3.
+
+- data_with_base_dof_0~3.pt
+  - PyTorch tensor version of data_with_base_dof_0~3.npy respectively. down sampled to reduce file size.
+  - structure:
+    - key:
+        - 'x': x coordinates of data points (torch tensor of shape (N, 3)), N is number of grid points(grid_num^3=8000)
+        - 'q': joint configurations corresponding to x (torch tensor of shape (N, q_for_each_point, dof + base_dof, dof)), where dof is the number of robot joints and base_dof is the number of base degrees of freedom. for each finger of leaphand, dof=4, base_dof=6, so shape is (N, q_for_each_point, 10, 4), q_for_each_point is number of valid contact configurations at each grid point, a fixed number for all grid points after down sampling. By default, q_for_each_point=100. The last dimension 4 corresponds to the link index in contact. For some grid points with less than q_for_each_point valid contact configurations at link index, the remaining entries are filled with inf
+        - 'k': the index of the grid point in the original full data (torch tensor of shape (N,)), used to map back to original grid point index. (values range from 0 to grid_num^3-1=7999)

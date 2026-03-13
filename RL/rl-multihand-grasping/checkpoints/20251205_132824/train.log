@@ -1,0 +1,9 @@
+2025-12-05 13:28:24,054 - train_ppo - INFO - Config: {'ppo': {'gamma': 0.99, 'gae_lambda': 0.95, 'clip_ratio': 0.2, 'value_loss_coef': 0.5, 'entropy_coef': 0.01, 'max_grad_norm': 0.5}, 'optimizer': {'learning_rate': 0.0003, 'adam_eps': 1e-05, 'weight_decay': 0.0}, 'training': {'total_timesteps': 10000000, 'num_envs': 4, 'steps_per_update': 64, 'num_epochs': 10, 'batch_size': 256, 'normalize_advantage': True}, 'network': {'pointnet': {'input_dim': 4, 'hidden_dims': [64, 128, 256], 'output_dim': 256, 'use_batch_norm': True}, 'joint_encoder': {'input_dim': 22, 'hidden_dims': [64, 64], 'output_dim': 64}, 'actor': {'hidden_dims': [256, 128], 'output_dim': 22, 'log_std_min': -20, 'log_std_max': 2}, 'critic': {'hidden_dims': [256, 128], 'output_dim': 1}}, 'logging': {'log_interval': 10, 'save_interval': 100, 'eval_interval': 50, 'num_eval_episodes': 10}, 'checkpoint': {'save_path': 'checkpoints/', 'resume': False, 'resume_path': ''}, 'seed': 42}
+2025-12-05 13:28:24,054 - train_ppo - INFO - Creating environments...
+2025-12-05 13:28:24,103 - train_ppo - INFO - Creating agent...
+2025-12-05 13:28:24,667 - train_ppo - INFO - Starting training...
+2025-12-05 13:35:25,922 - train_ppo - INFO - Update 10/39062 | Timesteps 2560 | Reward: 3.02 | Success: 0.00% | Policy Loss: -0.0486 | Value Loss: 0.4531
+2025-12-05 13:42:35,381 - train_ppo - INFO - Update 20/39062 | Timesteps 5120 | Reward: 1.04 | Success: 0.00% | Policy Loss: -0.0536 | Value Loss: 0.0566
+2025-12-05 13:49:44,975 - train_ppo - INFO - Update 30/39062 | Timesteps 7680 | Reward: 0.48 | Success: 0.00% | Policy Loss: -0.0419 | Value Loss: 0.0455
+2025-12-05 13:56:46,912 - train_ppo - INFO - Update 40/39062 | Timesteps 10240 | Reward: 1.52 | Success: 0.00% | Policy Loss: -0.0450 | Value Loss: 0.1344
+2025-12-05 14:03:38,870 - train_ppo - INFO - Update 50/39062 | Timesteps 12800 | Reward: 0.10 | Success: 0.00% | Policy Loss: -0.0361 | Value Loss: 0.0385

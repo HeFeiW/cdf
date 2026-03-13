@@ -18,11 +18,11 @@ from task_utils import seperate_target_obstacle
 sys.path.append("../../RDF")
 sys.path.append("../../RDF/panda_layers")
 from parallel_bf_sdf import ParallelBPSDF
-from qsdf import QSDF
+# from qsdf import QSDF
 from parallel_robot_layer import ParallelRobotLayer
 from para_nn_cdf import CDF
 from pybullet_utils import load_sdf_model, sample_points_from_obj
-from qp_mp_tao import QPPlanner
+# from qp_mp_tao import QPPlanner
 import time
 from pybullet_robot_sim import PandaSim, SphereManager
 import torch
@@ -262,7 +262,7 @@ def main_loop():
         # obj_center = np.array([-0.08, -0.04, 0.35])
         # obj_orientation = (-0.010324690776177509, 0.06031225002339917, -0.7045299372610894, 0.7070314001233444)
         p.resetBasePositionAndOrientation(obj, obj_center, obj_orientation)
-        ok = False
+        ok = True # for debugging, set ok=True to skip manual adjustment
         while not ok and display_mode == 'GUI':
             # 用上下左右，< > 键调整物体x, y, z位置变大或变小
             
@@ -389,7 +389,7 @@ def main_loop():
                         else:# not using qp
                             # use projection for cdf
                             cdf_model = cdf_models[i]
-                            cdf_min, cdf_grad = cdf.inference_d_wrt_q(x_in_robot_frame, theta,cdf_model)
+                            cdf_min, cdf_grad = cdf.inference_d_wrt_q(targ_x_in_robot_frame, theta,cdf_model)
                             q_proj = cdf.projection(theta, cdf_min, cdf_grad)
                             print('cdf_min:', cdf_min)
                             print('cdf_grad:', cdf_grad)
@@ -401,7 +401,7 @@ def main_loop():
                             c = input('Press any key to continue')
                     else:
                         if args.sdf_type == 'bp_sdf':
-                            sdf,grad = bp_sdf.get_serial_sdf_with_joints_grad_batch(x_in_robot_frame,pose,theta,bp_sdf_model,used_links = None, serial_idx = i)
+                            sdf,grad = bp_sdf.get_serial_sdf_with_joints_grad_batch(targ_x_in_robot_frame,pose,theta,bp_sdf_model,used_links = None, serial_idx = i)
                             sdf_min, min_idx = torch.min(sdf, dim=1)
                             grad = grad[:, min_idx, :].squeeze(1)
                             theta = theta - grad * step_size
@@ -421,7 +421,7 @@ def main_loop():
                             if len(used_links) == 0:
                                 print('no used links, skip this serial')
                                 continue
-                            sdf,grad = q_sdfs[i].get_sdf_with_joints_grad(x_in_robot_frame,pose,theta,used_links=used_links)
+                            sdf,grad = q_sdfs[i].get_sdf_with_joints_grad(targ_x_in_robot_frame,pose,theta,used_links=used_links)
                             sdf_min, min_idx = torch.min(sdf, dim=1)
                             grad = grad[:, min_idx, :].squeeze(1)
                             theta = theta - grad * step_size
@@ -447,7 +447,7 @@ def main_loop():
                 continue
                 c=input('press any key to continue')
                 q = q_init
-                d,grad = cdf.inference_d_wrt_q(x_in_robot_frame,q,sdf_model)
+                d,grad = cdf.inference_d_wrt_q(targ_x_in_robot_frame,q,sdf_model)
                 # 找到与grad正交的方向
                 n_q = len(grad)
 

@@ -1,0 +1,55 @@
+# 环境配置文件
+# Environment configuration for Multi-Hand Grasping
+
+# 场景设置
+scene:
+  table_size: [0.6, 0.6, 0.05]  # 桌面尺寸 [长, 宽, 高]
+  table_position: [0, 0, 0.4]   # 桌面位置
+  plane_z: 0.0                   # 地面高度
+
+# 点云配置
+pointcloud:
+  num_points: 1024               # 点云采样数量
+  camera_distance: 0.5           # 相机距离
+  camera_yaw: 0                  # 相机偏航角
+  camera_pitch: -30              # 相机俯仰角
+  fov: 60                        # 视场角
+  near: 0.01                     # 近裁剪面
+  far: 2.0                       # 远裁剪面
+  image_width: 640               # 图像宽度
+  image_height: 480              # 图像高度
+
+# 物体配置
+objects:
+  num_obstacles_min: 2           # 最小障碍物数量
+  num_obstacles_max: 5           # 最大障碍物数量
+  target_object_scale: 1.0       # 目标物体缩放
+  obstacle_scale: 1.0            # 障碍物缩放
+  spawn_area: [0.3, 0.3]         # 物体生成区域
+
+# 任务配置
+task:
+  success_height_threshold: 0.1  # 成功提升高度阈值 (m)
+  max_steps: 200                 # 最大步数
+  contact_threshold: 0.01        # 接触判定阈值
+
+# 奖励权重
+reward_weights:
+  distance: 1.0                  # 靠近目标奖励权重
+  finger: 0.5                    # 指尖接近奖励权重
+  lift: 2.0                      # 提升奖励权重
+  stable: 0.5                    # 稳定奖励权重
+  collision: -5.0                # 碰撞惩罚权重
+  action: -0.01                  # 动作惩罚权重
+  success: 10.0                  # 成功奖励
+
+# 动作配置
+action:
+  delta_q_clip: 0.1              # Δq 裁剪范围
+  action_frequency: 10           # 动作频率 (Hz)
+  simulation_frequency: 240      # 仿真频率 (Hz)
+
+# 渲染配置
+render:
+  enable_gui: false              # 是否启用 GUI
+  debug_visualize: false         # 是否显示调试信息

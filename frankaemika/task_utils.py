@@ -31,11 +31,11 @@ def seperate_target_obstacle(points):
     Returns:
         tuple: A tuple containing two arrays - target points and obstacle points.
     """
-    # is_obstacle = discriminate_target_obstacle(points)
-    # target_points = points[~is_obstacle]
-    # obstacle_points = points[is_obstacle]
-    # return target_points, obstacle_points
-    return auto_find_contact_points(points, threshold=0.027)
+    is_obstacle = discriminate_target_obstacle(points)
+    target_points = points[~is_obstacle]
+    obstacle_points = points[is_obstacle]
+    return target_points, obstacle_points
+    # return auto_find_contact_points(points, threshold=0.027)
 
 def auto_find_contact_points(points, threshold=0.01):
     ok = False

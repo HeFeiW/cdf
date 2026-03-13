@@ -6,7 +6,10 @@ DexHand/build/
 DexHand/log/
 DexHand/install/
 runs/
-*png
+*.png
+*.jpg
 # 除了model_dict.pt之外的所有pt文件
 !model_dict.pt
 *.pt
+*.npy
+*.pth

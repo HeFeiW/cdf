@@ -15,14 +15,19 @@ class CDFDataset(Dataset):
         - tensor_data: shape (nbData, nbData, max_q_per_x, num_joints)
         - Each grid point x_idx has a set of contact configurations Q_idx
     
-    Sampling strategy: 距离放缩采样 (Distance-scaled sampling)
+    Sampling strategy A-q: 距离放缩采样 (Distance-scaled sampling)
         给定 q_0 和候选集合 Q_idx:
         1. q_min = argmin_{q_i in Q_idx} ||q_i - q_0||
         2. q_contact ~ {q_i | ||q_i - q_min|| <= (1+gamma)||q_min - q_0||}
+    Sampling strategy A-d: 距离放缩采样 (Distance-scaled sampling)
+        给定 q_0 和候选集合 Q_idx:
+        1. q_min = argmin_{q_i in Q_idx} ||q_i - q_0||
+        2. q_contact ~ {q_i | ||q_i - q_min|| <= (1+gamma)||q_min - q_0||}
+        3. d = ||q_contact - q_0||
     """
     
     def __init__(self, data_path, num_joints=2, gamma=0.5, samples_per_grid=10, 
-                 q_min=-np.pi, q_max=np.pi, task_space=[[-4.0,-4.0],[4.0,4.0]]):
+                 q_min=-np.pi, q_max=np.pi, task_space=[[-4.0,-4.0],[4.0,4.0]],sampling_strategy='A-q'):
         """
         Args:
             data_path: path to .pt file containing tensor_data
@@ -31,6 +36,7 @@ class CDFDataset(Dataset):
             samples_per_grid: number of (q_0, q_contact) samples per grid point
             q_min, q_max: configuration space bounds
             task_space: workspace bounds for x_idx
+            sampling_strategy: 'A-q' or 'A-d' (currently only 'A-q' implemented)
         """
         super().__init__()
         
@@ -42,6 +48,7 @@ class CDFDataset(Dataset):
         self.q_min = q_min
         self.q_max = q_max
         self.task_space = task_space
+        self.sampling_strategy = sampling_strategy
         
         # Data dimensions
         self.nbData_x, self.nbData_y, self.max_q_per_x, _ = self.tensor_data.shape
@@ -86,7 +93,10 @@ class CDFDataset(Dataset):
                     if q_contact is not None:
                         # Compute Δq
                         delta_q = q_contact - q_0
-                        
+                        # if self.sampling_strategy == 'A-d':
+                        #     # Append distance as additional feature
+                        #     d = torch.norm(delta_q).unsqueeze(0)  # (1,)
+                        #     delta_q = torch.cat([delta_q, d], dim=0)  # (num_joints + 1,)
                         # Store sample
                         self.samples.append({
                             'x_idx': x_idx,
@@ -94,6 +104,7 @@ class CDFDataset(Dataset):
                             'q_contact': q_contact,
                             'delta_q': delta_q
                         })
+
     
     def _distance_scaled_sampling(self, q_0, Q_idx):
         """
@@ -148,7 +159,8 @@ class CDFDataset(Dataset):
 
 
 def get_dataloader(data_path, batch_size=64, num_joints=2, gamma=0.5, 
-                   samples_per_grid=10, shuffle=True, num_workers=0):
+                   samples_per_grid=10, shuffle=True, num_workers=0,
+                     sampling_strategy='A-q'):
     """
     Create DataLoader for CVAE training
     
@@ -168,7 +180,8 @@ def get_dataloader(data_path, batch_size=64, num_joints=2, gamma=0.5,
         data_path=data_path,
         num_joints=num_joints,
         gamma=gamma,
-        samples_per_grid=samples_per_grid
+        samples_per_grid=samples_per_grid,
+        sampling_strategy=sampling_strategy
     )
     
     dataloader = DataLoader(

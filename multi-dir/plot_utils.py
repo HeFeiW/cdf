@@ -199,7 +199,7 @@ def plot_cvae_goals(ax, q_goals, q_trajectory, title='CVAE Sampled Goals'):
                   label='CVAE Goals', zorder=5)
         
         # Draw arrows from trajectory to goals
-        for i in range(0, len(q_trajectory), max(1, len(q_trajectory)//10)):
+        for i in range(0, len(q_trajectory), max(1, len(q_trajectory)//len(q_trajectory))):
             if i < len(q_goals):
                 ax.arrow(q_trajectory[i, 0], q_trajectory[i, 1],
                         q_goals[i, 0] - q_trajectory[i, 0],

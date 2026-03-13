@@ -1,10 +1,5 @@
-# -----------------------------------------------------------------------------
-# SPDX-License-Identifier: MIT
-# This file is part of the CDF project.
-# Copyright (c) 2024 Idiap Research Institute <contact@idiap.ch>
-# Contributor: Yimming Li <yiming.li@idiap.ch>
-# -----------------------------------------------------------------------------
-
+# Last modified: 2026-03-03
+# Construct a 2D CDF using a neural network, and compare the results with the groundtruth CDF calculated by online computation method. The model is trained on a single point, and the CDF is evaluated on a grid of points. The code also includes visualization of the CDF, groundtruth CDF, and their difference, as well as the gradient cosine similarity and L2 loss between the predicted gradient and groundtruth gradient.
 import torch
 import parser
 import argparse
@@ -136,7 +131,7 @@ def inference(x,q,net):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_path", type=str, default="'siren_model22.pth'", help="Path to the model directory")
+    parser.add_argument("--model_path", type=str, default="model22.pth", help="Path to the model directory")
     parser.add_argument("--model_type", type=str, default="siren", help="Type of model to use (e.g., siren, mlp)")
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

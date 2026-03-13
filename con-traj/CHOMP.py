@@ -1,9 +1,12 @@
 import numpy as np
 from abc import ABC, abstractmethod
 from typing import List, Tuple, Optional
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
+
+from chomp_config_loader import CHOMPConfig
 
 class Trajectory:
     def __init__(self, waypoints: np.ndarray, dt: float):
@@ -39,10 +42,9 @@ class SmoothnessCost(CostFunction):
         return 0.5 * float(xi.T @ (self.A @ xi))
 
     def gradient(self, traj: Trajectory) -> np.ndarray:
-        xi = traj.xi.transpose().reshape(-1)
+        xi = traj.xi.reshape(-1)
         grad = self.A @ xi
-        grad = grad.reshape(traj.D, traj.T).transpose()
-        return grad
+        return grad.reshape(traj.T, traj.D)
 
 class ObstacleCost(CostFunction):
     def __init__(self, environment):
@@ -95,6 +97,7 @@ class CHOMPOptimizer:
         obstacle_cost: ObstacleCost,
         step_size: float,
         A_inv: np.ndarray,
+        lambda_obs: float = 0.1,
     ):
         self.smooth_cost = smooth_cost
         self.obstacle_cost = obstacle_cost
@@ -102,7 +105,7 @@ class CHOMPOptimizer:
         self.A_inv = A_inv
         # weight for obstacle cost (tuned so that obstacle and smoothness
         # gradients have comparable magnitudes)
-        self.lambda_obs = 0.1
+        self.lambda_obs = lambda_obs
 
     def step(self, traj: Trajectory) -> Trajectory:
         grad_smooth = self.smooth_cost.gradient(traj)
@@ -114,8 +117,8 @@ class CHOMPOptimizer:
         print("Obstacle grad norm:", np.mean(np.linalg.norm(grad_obs, axis=1)))
         grad_total = grad_smooth + grad_obs * self.lambda_obs
         # Covariant gradient descent
-        delta = self.A_inv @ grad_total.transpose().reshape(-1)
-        delta = delta.reshape(traj.D, traj.T).transpose()
+        delta = self.A_inv @ grad_total.reshape(-1)
+        delta = delta.reshape(traj.T, traj.D)
 
         new_xi = traj.xi - self.step_size * delta
         # Keep endpoints fixed
@@ -329,10 +332,531 @@ def build_smoothness_A(T: int, D: int, damping: float = 1e-6) -> np.ndarray:
     w1 = 1.0  # weight for velocity
     w2 = 1.0  # weight for acceleration
     A = B.T @ B * w1 + C.T @ C * w2
-    A = np.kron(np.eye(D), A)
+    A = np.kron(A, np.eye(D))
     
     A += damping * np.eye(T * D)
     return A
+
+
+def build_smoothness_A_free_end(n: int, D: int, damping: float = 1e-6) -> np.ndarray:
+    """Build smoothness matrix for fixed-start, free-end boundary conditions.
+
+    The trajectory is parameterised as xi = (q_1, ..., q_n), where q_0 (start)
+    is a known constant **excluded** from the optimisation variables.  The end
+    point q_n is a free variable that can be moved by the goal-set constraint.
+
+    The finite-difference (velocity) operator is defined as
+        K[0, :] = [1, 0, ..., 0]          (encodes q_1 - q_0, q_0 absorbed into e)
+        K[i, i-1] = -1, K[i, i] = 1       for i = 1, ..., n-1
+
+    This lower-bidiagonal K gives  A_scalar = K^T K  which is tridiagonal:
+        diagonal:     [2, 2, ..., 2, 1]
+        off-diagonal: [-1, -1, ..., -1]
+
+    Its inverse satisfies  A_scalar^{-1}[i, j] = min(i, j) + 1  (0-indexed),
+    so the (n-1, n-1) entry equals  n  — this is the scalar β used in eq. 14.
+
+    Parameters
+    ----------
+    n : int
+        Number of free waypoints (T_total - 1, excluding the fixed start q_0).
+    D : int
+        Configuration-space dimension.
+    damping : float
+        Small regularisation added to the diagonal for numerical stability.
+
+    Returns
+    -------
+    A : np.ndarray, shape (n*D, n*D)
+    """
+    # Lower-bidiagonal K (scalar, n×n)
+    K = np.zeros((n, n))
+    for i in range(n):
+        K[i, i] = 1.0
+        if i > 0:
+            K[i, i - 1] = -1.0
+
+    A_scalar = K.T @ K                           # (n, n)
+    A = np.kron(A_scalar, np.eye(D))             # (n*D, n*D)
+    A += damping * np.eye(n * D)
+    return A
+
+
+# ==================== Goal-Set Constraint interface ====================
+
+class GoalSetConstraint(ABC):
+    """Abstract interface for a goal-set constraint applied to the end point.
+
+    The constraint is  h(q_n) = 0  where q_n is the last waypoint.
+    Subclasses must implement :meth:`query` which returns both the constraint
+    value **and** its Jacobian at queried point.
+
+    This interface is intentionally minimal: it is only a *query* oracle for
+    the endpoint; it does not modify the trajectory itself.
+    """
+
+    @abstractmethod
+    def query(self, q_n: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Evaluate the goal-set constraint at the endpoint q_n.
+
+        Parameters
+        ----------
+        q_n : np.ndarray, shape (D,)
+            Current end-point configuration.
+
+        Returns
+        -------
+        h : np.ndarray, shape (k,)
+            Constraint residual.  The constraint is satisfied when h = 0.
+        C_tilde : np.ndarray, shape (k, D)
+            Jacobian  dh/dq_n  evaluated at q_n.
+        """
+        pass
+
+
+# ==================== CHOMP with Goal-Set Constraints ====================
+
+class CHOMPGoalSetOptimizer:
+    """CHOMP optimiser extended for goal-set constraints (Dragan et al. 2011).
+
+    The trajectory is represented as xi = (q_0, q_1, ..., q_n) with q_0 fixed.
+    The smoothness matrix A is built for the *free* sub-trajectory
+    xi_free = (q_1, ..., q_n) using free-end boundary conditions so that
+    A^{-1} naturally propagates endpoint corrections to the whole trajectory.
+
+    Two constrained update methods are provided:
+
+    * :meth:`step_general` — the general constrained update (eq. 11 in the
+      paper), which builds the full constraint Jacobian
+      ``C = [0, ..., 0, C_tilde]`` and solves the projected gradient step
+      without additional assumptions on the structure of A^{-1}.
+
+    * :meth:`step_goalset` — the simplified closed-form update (eq. 14 in
+      the paper), which exploits the goal-set structure via the last-D-rows
+      block ``B_n`` of A^{-1} and the scalar  β = A^{-1}[n-1,n-1] / I_D.
+      This is the version recommended for pure goal-set problems.
+
+    Parameters
+    ----------
+    obstacle_cost : ObstacleCost
+        Obstacle cost computed over the full trajectory.
+    step_size : float
+        Gradient-descent step size η.
+    A_free : np.ndarray, shape (n*D, n*D)
+        Smoothness matrix for the free variables (build with
+        :func:`build_smoothness_A_free_end`).
+    q_start : np.ndarray, shape (D,)
+        Fixed start configuration q_0.  Used to compute the boundary
+        correction term in the smoothness gradient.
+    lambda_obs : float
+        Weight applied to the obstacle gradient.
+    """
+
+    def __init__(
+        self,
+        obstacle_cost: ObstacleCost,
+        step_size: float,
+        A_free: np.ndarray,
+        q_start: np.ndarray,
+        lambda_obs: float = 0.1,
+    ):
+        self.obstacle_cost = obstacle_cost
+        self.step_size = step_size
+        self.A_free = A_free
+        self.A_free_inv = np.linalg.inv(A_free)
+        self.q_start = np.asarray(q_start, dtype=float)
+        self.lambda_obs = lambda_obs
+
+        nD = A_free.shape[0]
+        self.D = self.q_start.shape[0]
+        assert nD % self.D == 0, "A_free shape is inconsistent with D"
+        self.n = nD // self.D   # number of free waypoints
+
+        # Boundary correction for the smoothness gradient:
+        #   grad_smooth = A_free @ xi_free_flat + b_boundary
+        # where b_boundary = K^T @ e_free, e_free[0] = -q_start, rest 0.
+        # Since K is lower-bidiagonal with K[0] = [1, 0, ...],
+        # K^T @ e_free = [-q_start, 0, ..., 0] (first D entries only).
+        self._b_boundary = np.zeros(nD, dtype=float)
+        self._b_boundary[: self.D] = -self.q_start
+
+        # Pre-extract B_n for eq. 14: last D rows of A_free_inv
+        #   shape (D, n*D)
+        self._B_n = self.A_free_inv[(self.n - 1) * self.D :, :]
+
+        # β scalar: A_free_inv[n-1, n-1] (block) should be β * I_D
+        B_nn = self._B_n[:, (self.n - 1) * self.D :]   # (D, D)
+        self._beta = float(B_nn[0, 0])
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _free_vars(self, traj: Trajectory) -> np.ndarray:
+        """Extract free variables xi_free = traj.xi[1:] flattened."""
+        return traj.xi[1:].reshape(-1)   # (n*D,)
+
+    def _smoothness_gradient(self, xi_free_flat: np.ndarray) -> np.ndarray:
+        """Gradient of the smoothness prior w.r.t. xi_free (n*D,).
+
+        grad = A_free @ xi_free + b_boundary
+        The boundary term encodes the fixed start q_0 via K^T @ e_free.
+        """
+        return self.A_free @ xi_free_flat + self._b_boundary
+
+    def _obstacle_gradient(self, traj: Trajectory) -> np.ndarray:
+        """Obstacle gradient w.r.t. free variables, flattened (n*D,)."""
+        full_grad = self.obstacle_cost.gradient(traj)   # (T, D)
+        return full_grad[1:].reshape(-1)                 # skip q_0
+
+    def _total_gradient(self, traj: Trajectory) -> np.ndarray:
+        """Combined gradient (n*D,)."""
+        xi_free_flat = self._free_vars(traj)
+        g_smooth = self._smoothness_gradient(xi_free_flat)
+        g_obs = self._obstacle_gradient(traj)
+        return g_smooth + self.lambda_obs * g_obs
+
+    # ------------------------------------------------------------------
+    # Unconstrained step (for comparison / warm-starting)
+    # ------------------------------------------------------------------
+
+    def step_unconstrained(self, traj: Trajectory) -> Trajectory:
+        """Standard covariant gradient descent step (no constraint).
+
+        The start q_0 is kept fixed; the end q_n is free to move.
+        """
+        g = self._total_gradient(traj)
+        delta = self.A_free_inv @ g                      # (n*D,)
+        xi_free_new = self._free_vars(traj) - self.step_size * delta
+        new_xi = np.vstack([traj.xi[:1], xi_free_new.reshape(self.n, self.D)])
+        return Trajectory(new_xi, traj.dt)
+
+    # ------------------------------------------------------------------
+    # General constrained step — equation (11) of Dragan et al. 2011
+    # ------------------------------------------------------------------
+
+    def step_general(
+        self, traj: Trajectory, goal_constraint: GoalSetConstraint
+    ) -> Trajectory:
+        """Constrained update using the general formula (eq. 11).
+
+        Builds the full Jacobian  C = [0, ..., 0, C_tilde] ∈ R^{k × n*D}
+        and solves the projected gradient step exactly, without relying on
+        the B_nn = β·I_D simplification.
+
+        The update decomposes as:
+
+            xi_new = xi_t
+                     - (1/η) A^{-1} g                 # unconstrained step
+                     + (1/η) P (C A^{-1} g)           # project gradient
+                     - P b                             # pull onto constraint
+
+        where  P = A^{-1} C^T (C A^{-1} C^T)^{-1}   (pseudo-inverse in A-metric).
+        """
+        eta = 1.0 / self.step_size                      # η = 1/step_size
+        g = self._total_gradient(traj)                  # (n*D,)
+        q_n = traj.xi[-1]                               # (D,)
+
+        h, C_tilde = goal_constraint.query(q_n)         # (k,), (k, D)
+        k = h.shape[0]
+
+        # Build full Jacobian C ∈ R^{k × n*D}: non-zero only in last D columns
+        C_full = np.zeros((k, self.n * self.D), dtype=float)
+        C_full[:, (self.n - 1) * self.D :] = C_tilde
+
+        # P = A_inv C^T (C A_inv C^T)^{-1}   (n*D, k)
+        A_inv_CT = self.A_free_inv @ C_full.T            # (n*D, k)
+        CAiCT = C_full @ A_inv_CT                        # (k, k)
+        CAiCT_inv = np.linalg.inv(CAiCT)
+        P = A_inv_CT @ CAiCT_inv                         # (n*D, k)
+
+        # Unconstrained step
+        xi_free = self._free_vars(traj)
+        xi_unconstrained = xi_free - (1.0 / eta) * (self.A_free_inv @ g)
+
+        # Correction: project gradient onto constraint null-space + feasibility
+        proj_term = (1.0 / eta) * P @ (C_full @ (self.A_free_inv @ g))
+        feasib_term = P @ h                              # b = h(q_n)
+
+        xi_free_new = xi_unconstrained + proj_term - feasib_term
+        new_xi = np.vstack([traj.xi[:1], xi_free_new.reshape(self.n, self.D)])
+        return Trajectory(new_xi, traj.dt)
+
+    # ------------------------------------------------------------------
+    # Goal-set simplified step — equation (14) of Dragan et al. 2011
+    # ------------------------------------------------------------------
+
+    def step_goalset(
+        self, traj: Trajectory, goal_constraint: GoalSetConstraint
+    ) -> Trajectory:
+        """Constrained update using the goal-set simplified formula (eq. 14).
+
+        Exploits the block structure of A^{-1} for goal-set constraints:
+          - B_n   = last D rows of A^{-1}             (D, n*D)
+          - B_nn  = last D×D block of A^{-1} ≈ β I_D  (scalar β)
+
+        The update reads:
+
+            xi_new = xi_t
+                   - (1/η)           A^{-1} g
+                   + (1/(η β))       B_n^T C̃^T (C̃ C̃^T)^{-1} C̃ B_n g
+                   - (1/β)           B_n^T C̃^T (C̃ C̃^T)^{-1} h
+
+        Physical interpretation:
+          * B_n g    — the endpoint component of the unconstrained gradient
+          * C̃ B_n g — that component projected through the constraint Jacobian
+          * The first correction projects the gradient update into the
+            constraint null-space (Euclidean projection in q-space)
+          * The second correction moves the endpoint onto the constraint surface
+          * B_n^T propagates the endpoint correction back along the trajectory
+            as a linear interpolation (due to the structure of A^{-1})
+        """
+        eta = 1.0 / self.step_size
+        g = self._total_gradient(traj)                   # (n*D,)
+        q_n = traj.xi[-1]                                # (D,)
+
+        h, C_tilde = goal_constraint.query(q_n)          # (k,), (k, D)
+
+        # B_n g: endpoint sub-vector of the unconstrained update (D,)
+        B_n_g = self._B_n @ g                            # (D,)
+
+        # (C̃ C̃^T)^{-1}   (k, k)
+        CCT_inv = np.linalg.inv(C_tilde @ C_tilde.T)
+
+        # Gradient projection correction: projects endpoint gradient onto the
+        # constraint null-space and propagates back via B_n^T  (n*D,)
+        proj_term = (
+            (1.0 / (eta * self._beta))
+            * self._B_n.T
+            @ C_tilde.T
+            @ CCT_inv
+            @ (C_tilde @ B_n_g)
+        )
+
+        # Feasibility correction: pulls endpoint onto the constraint surface (n*D,)
+        feasib_term = (
+            (1.0 / self._beta)
+            * self._B_n.T
+            @ C_tilde.T
+            @ CCT_inv
+            @ h
+        )
+
+        xi_free = self._free_vars(traj)
+        xi_free_new = (
+            xi_free
+            - (1.0 / eta) * (self.A_free_inv @ g)
+            + proj_term
+            - feasib_term
+        )
+        new_xi = np.vstack([traj.xi[:1], xi_free_new.reshape(self.n, self.D)])
+        return Trajectory(new_xi, traj.dt)
+
+    # ------------------------------------------------------------------
+    # Convenience: run full optimisation
+    # ------------------------------------------------------------------
+
+    def optimize(
+        self,
+        traj: Trajectory,
+        goal_constraint: GoalSetConstraint,
+        n_iters: int,
+        method: str = "goalset",
+    ) -> Trajectory:
+        """Run the optimisation loop.
+
+        Parameters
+        ----------
+        traj : Trajectory
+            Initial trajectory.
+        goal_constraint : GoalSetConstraint
+            End-point constraint oracle.
+        n_iters : int
+            Number of gradient steps.
+        method : str
+            ``"goalset"`` (eq. 14, default) or ``"general"`` (eq. 11).
+        """
+        step_fn = self.step_goalset if method == "goalset" else self.step_general
+        for _ in range(n_iters):
+            traj = step_fn(traj, goal_constraint)
+        return traj
+
+
+# ==================== Example GoalSetConstraint implementations ====================
+
+class TargetPointConstraint(GoalSetConstraint):
+    """Constraint: the endpoint must reach a specific target point q_goal.
+
+    h(q_n) = q_n - q_goal   (shape (D,))
+    C_tilde = I_D            (shape (D, D))
+
+    When h = 0 the endpoint coincides with q_goal exactly.
+    """
+
+    def __init__(self, q_goal: np.ndarray):
+        self.q_goal = np.asarray(q_goal, dtype=float)
+
+    def query(self, q_n: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        h = q_n - self.q_goal                           # (D,)
+        C_tilde = np.eye(self.q_goal.shape[0])          # (D, D)
+        return h, C_tilde
+
+
+class TargetHyperplaneConstraint(GoalSetConstraint):
+    """Constraint: the endpoint must lie on a hyperplane n^T q = d.
+
+    h(q_n) = [n^T q_n - d]   (shape (1,))
+    C_tilde = n^T             (shape (1, D))
+
+    This is the typical "goal set" described in the paper: a (D-1)-dimensional
+    manifold of valid endpoints.  The optimiser is free to choose *which* point
+    on the hyperplane to reach, trading off smoothness and obstacle avoidance.
+    """
+
+    def __init__(self, normal: np.ndarray, offset: float):
+        """
+        Parameters
+        ----------
+        normal : np.ndarray, shape (D,)
+            Unit (or non-unit) normal of the hyperplane.
+        offset : float
+            Scalar d such that the constraint is n^T q = d.
+        """
+        self.normal = np.asarray(normal, dtype=float)
+        self.offset = float(offset)
+
+    def query(self, q_n: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        h = np.array([float(self.normal @ q_n) - self.offset])   # (1,)
+        C_tilde = self.normal[np.newaxis, :]                      # (1, D)
+        return h, C_tilde
+
+
+class TargetRegionConstraint(GoalSetConstraint):
+    """Constraint: the endpoint must lie inside a ball of radius r around q_goal.
+
+    Outside the ball:  h(q_n) = ||q_n - q_goal|| - r  (active)
+    Inside the ball:   h(q_n) = 0                      (inactive — no force)
+
+    C_tilde = (q_n - q_goal)^T / ||q_n - q_goal||     (shape (1, D))
+
+    This represents a soft goal-region: the optimiser is free once the endpoint
+    enters the ball.
+    """
+
+    def __init__(self, q_goal: np.ndarray, radius: float):
+        self.q_goal = np.asarray(q_goal, dtype=float)
+        self.radius = float(radius)
+
+    def query(self, q_n: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        diff = q_n - self.q_goal
+        dist = np.linalg.norm(diff)
+        violation = dist - self.radius
+        if violation <= 0.0:
+            D = q_n.shape[0]
+            return np.zeros(1), np.zeros((1, D))
+        h = np.array([violation])
+        C_tilde = (diff / dist)[np.newaxis, :]                    # (1, D)
+        return h, C_tilde
+
+
+# ----------------------- Configuration-based utilities -----------------------
+
+def create_shapes_from_config(config: CHOMPConfig) -> List[Shape2D]:
+    """Create Shape2D objects from configuration.
+    
+    Args:
+        config: CHOMPConfig instance
+        
+    Returns:
+        List of Shape2D objects
+    """
+    shapes = []
+    for shape_cfg in config.obstacle_shapes:
+        shape_type = shape_cfg.get('type', '').lower()
+        
+        if shape_type == 'circle':
+            center = shape_cfg.get('center', [0.0, 0.0])
+            radius = shape_cfg.get('radius', 0.1)
+            shapes.append(Circle2D(center=tuple(center), radius=radius))
+        
+        elif shape_type == 'box':
+            center = shape_cfg.get('center', [0.0, 0.0])
+            width = shape_cfg.get('width', 0.1)
+            height = shape_cfg.get('height', 0.1)
+            shapes.append(Box2D(center=tuple(center), w=width, h=height))
+        
+        elif shape_type == 'segment':
+            point_a = shape_cfg.get('point_a', [0.0, 0.0])
+            point_b = shape_cfg.get('point_b', [1.0, 1.0])
+            radius = shape_cfg.get('radius', 0.0)
+            shapes.append(Segment2D(a=tuple(point_a), b=tuple(point_b), radius=radius))
+        
+        else:
+            print(f"Warning: Unknown obstacle type '{shape_type}', skipping.")
+    
+    return shapes
+
+
+def run_chomp_from_config(config_path: str, verbose: bool = True) -> Tuple[Environment2D, Trajectory, CHOMPOptimizer]:
+    """Run CHOMP optimizer using configuration from file.
+    
+    Args:
+        config_path: Path to YAML configuration file
+        verbose: Whether to print configuration and progress information
+        
+    Returns:
+        Tuple of (environment, final_trajectory, optimizer)
+    """
+    # Load configuration
+    config = CHOMPConfig.from_file(config_path)
+    
+    if verbose:
+        print(config)
+    
+    # Create initial trajectory using linear interpolation
+    alphas = np.linspace(0.0, 1.0, config.T).reshape(-1, 1)
+    waypoints = (1 - alphas) * config.start + alphas * config.goal
+    init_traj = Trajectory(waypoints=waypoints.copy(), dt=config.dt)
+    
+    # Create environment from configuration
+    shapes = create_shapes_from_config(config)
+    env2d = Environment2D(shapes=shapes, clearance=config.clearance)
+    
+    # Build smoothness matrix
+    A = build_smoothness_A(
+        config.T, 
+        config.D, 
+        damping=config.smoothness_damping
+    )
+    A_inv = np.linalg.inv(A)
+    
+    # Create cost functions
+    smooth_cost = SmoothnessCost(A)
+    obs_cost = ObstacleCost(env2d)
+    
+    # Create optimizer
+    optimizer = CHOMPOptimizer(
+        smooth_cost=smooth_cost,
+        obstacle_cost=obs_cost,
+        step_size=config.step_size,
+        A_inv=A_inv,
+        lambda_obs=config.lambda_obs,
+    )
+    
+    # Run optimization
+    if verbose:
+        print(f"\nStarting CHOMP optimization ({config.num_iterations} iterations)...")
+    
+    cur_traj = init_traj
+    for k in range(config.num_iterations):
+        cur_traj = optimizer.step(cur_traj)
+        if verbose and (k + 1) % max(1, config.num_iterations // 10) == 0:
+            print(f"  Iteration {k + 1}/{config.num_iterations}")
+    
+    if verbose:
+        print("Optimization complete.")
+    
+    return env2d, cur_traj, optimizer
 
 
 # ----------------------------- Visualization ---------------------------
@@ -382,61 +906,66 @@ def plot_environment_and_trajectory(env: Environment2D, trajs: List[Trajectory],
         plt.show()
     
 if __name__ == "__main__":
-    # Problem setup
-    T, D = 1000, 2
-    # Use a reasonable time step so obstacle gradients are not overly scaled
-    dt = 1.0 / (T - 1)
-    start = np.array([0.1, 0.1])
-    goal = np.array([0.6, 0.9])
+    import sys
+    
+    # Default config path
+    config_path = 'chomp_config.yaml'
+    if len(sys.argv) > 1:
+        config_path = sys.argv[1]
+    
+    # Load configuration and run CHOMP
+    config = CHOMPConfig.from_file(config_path)
+    print(config)
+    
+    # Create initial trajectory using linear interpolation
+    alphas = np.linspace(0.0, 1.0, config.T).reshape(-1, 1)
+    waypoints = (1 - alphas) * config.start + alphas * config.goal
+    init_traj = Trajectory(waypoints=waypoints.copy(), dt=config.dt)
 
-    # Linear interpolation initial trajectory
-    alphas = np.linspace(0.0, 1.0, T).reshape(-1, 1)
-    waypoints = (1 - alphas) * start + alphas * goal
-    init_traj = Trajectory(waypoints=waypoints.copy(), dt=dt)
-
-    # Obstacles
-    shapes: List[Shape2D] = [
-        Circle2D(center=(0.2, 0.4), radius=0.1),
-        Circle2D(center=(0.4, 0.6), radius=0.1),
-        # Box2D(center=(0.7, 0.3), w=0.2, h=0.2),
-        # Segment2D(a=(0.2, 0.8), b=(0.8, 0.6), radius=0.03),
-    ]
-    env2d = Environment2D(shapes=shapes, clearance=0.04)
+    # Create environment from configuration
+    shapes = create_shapes_from_config(config)
+    env2d = Environment2D(shapes=shapes, clearance=config.clearance)
 
     # Smoothness matrix and its inverse (covariant metric)
-    A = build_smoothness_A(T, D, damping=1e-4)
-    print("Smoothness matrix A shape:", A)
+    A = build_smoothness_A(config.T, config.D, damping=config.smoothness_damping)
     A_inv = np.linalg.inv(A)
-    print("Inverse smoothness matrix A_inv =", A_inv)
-    # exit()
+    
+    # Create cost functions
     smooth_cost = SmoothnessCost(A)
     obs_cost = ObstacleCost(env2d)
 
     optimizer = CHOMPOptimizer(
         smooth_cost=smooth_cost,
         obstacle_cost=obs_cost,
-        step_size=0.001,
+        step_size=config.step_size,
         A_inv=A_inv,
+        lambda_obs=config.lambda_obs,
     )
 
     # Optimize
-    n_iters = 100
     trajs_to_plot = [init_traj]
     cur = init_traj
-    for k in range(n_iters):
+    for k in range(config.num_iterations):
         cur = optimizer.step(cur)
         trajs_to_plot.append(cur)
-        # _ = input("Press Enter to continue...")
 
-    # Plot
-    plot_environment_and_trajectory(env2d, trajs_to_plot, xlim=(0.0, 1.0), ylim=(0.0, 1.0),
-                                    fname='chomp_2d_result.png')
+    # Plot trajectory evolution
+    plot_environment_and_trajectory(
+        env2d, 
+        trajs_to_plot, 
+        xlim=config.plot_xlim, 
+        ylim=config.plot_ylim,
+        fname=config.trajectory_plot_name if config.save_trajectory_plot else None
+    )
+    
+    # Plot gradients on final trajectory
     grad_smooth = optimizer.smooth_cost.gradient(trajs_to_plot[-1])
     grad_obs = optimizer.obstacle_cost.gradient(trajs_to_plot[-1])
-    # 画出最后一条轨迹，并在每个点上画出平滑梯度和障碍梯度的箭头
     final_traj = trajs_to_plot[-1]
-    grad_obs = grad_obs * 5
-    grad_smooth = grad_smooth * 5
+    
+    grad_obs = grad_obs * config.gradient_scale_factor
+    grad_smooth = grad_smooth * config.gradient_scale_factor
+    
     plt.figure(figsize=(8, 8))
     plt.plot(final_traj.xi[:, 0], final_traj.xi[:, 1], 'k-', label='Final Trajectory')
     plt.quiver(final_traj.xi[:, 0], final_traj.xi[:, 1],
@@ -445,11 +974,115 @@ if __name__ == "__main__":
     plt.quiver(final_traj.xi[:, 0], final_traj.xi[:, 1],
                -grad_obs[:, 0], -grad_obs[:, 1],
                color='red', scale=50, width=0.005, label='Obstacle Gradient')
-    plt.xlim(0.0, 1.0)
-    plt.ylim(0.0, 1.0)
+    plt.xlim(*config.plot_xlim)
+    plt.ylim(*config.plot_ylim)
     plt.gca().set_aspect('equal', adjustable='box')
     plt.grid(True, alpha=0.3)
     plt.title('Final Trajectory with Gradients')
     plt.legend()
+    
+    if config.save_gradient_plot:
+        plt.savefig(config.gradient_plot_name, dpi=200)
     plt.show()
-    plt.savefig('chomp_2d_final_gradients.png', dpi=200)
+
+    # ==================================================================
+    # Goal-Set CHOMP demo
+    # ==================================================================
+    print("\n--- Goal-Set CHOMP demo ---")
+
+    # Build free-end smoothness matrix (n = T-1 free variables)
+    n_free = config.T - 1
+    A_free = build_smoothness_A_free_end(n_free, config.D,
+                                         damping=config.smoothness_damping)
+
+    # Re-use the same environment and a fresh linear trajectory
+    alphas_gs = np.linspace(0.0, 1.0, config.T).reshape(-1, 1)
+    init_xi_gs = (1 - alphas_gs) * config.start + alphas_gs * config.goal
+    traj_gs = Trajectory(waypoints=init_xi_gs.copy(), dt=config.dt)
+
+    # Define a goal-set constraint: the endpoint must lie on the horizontal
+    # line  y = config.goal[1]  (a hyperplane constraint).
+    # This means the optimiser is free to choose the x coordinate of the
+    # endpoint while satisfying the y-coordinate constraint.
+    goal_normal = np.zeros(config.D)
+    goal_normal[1] = 1.0                                  # y-axis direction
+    goal_constraint = TargetHyperplaneConstraint(
+        normal=goal_normal,
+        offset=float(config.goal[1]),
+    )
+
+    goal_set_optimizer = CHOMPGoalSetOptimizer(
+        obstacle_cost=obs_cost,
+        step_size=config.step_size,
+        A_free=A_free,
+        q_start=config.start,
+        lambda_obs=config.lambda_obs,
+    )
+
+    print(f"Initial endpoint: {traj_gs.xi[-1]}")
+    print(f"Goal hyperplane: y = {config.goal[1]:.4f}")
+    print(f"β (A^{{-1}} endpoint diagonal): {goal_set_optimizer._beta:.4f}")
+
+    # --- Run eq. 14 (goal-set simplified) ---
+    trajs_gs14 = [traj_gs]
+    cur_gs = traj_gs
+    for k in range(config.num_iterations):
+        cur_gs = goal_set_optimizer.step_goalset(cur_gs, goal_constraint)
+        trajs_gs14.append(cur_gs)
+
+    h_final14, _ = goal_constraint.query(cur_gs.xi[-1])
+    print(f"[eq.14] Final endpoint: {cur_gs.xi[-1]}  |  constraint residual h = {h_final14}")
+
+    # --- Run eq. 11 (general) ---
+    cur_gs11 = Trajectory(waypoints=init_xi_gs.copy(), dt=config.dt)
+    trajs_gs11 = [cur_gs11]
+    for k in range(config.num_iterations):
+        cur_gs11 = goal_set_optimizer.step_general(cur_gs11, goal_constraint)
+        trajs_gs11.append(cur_gs11)
+
+    h_final11, _ = goal_constraint.query(cur_gs11.xi[-1])
+    print(f"[eq.11] Final endpoint: {cur_gs11.xi[-1]}  |  constraint residual h = {h_final11}")
+
+    # --- Visualise both alongside the unconstrained result ---
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    for ax, trajs_vis, title in zip(
+        axes,
+        [trajs_to_plot, trajs_gs14, trajs_gs11],
+        ["Unconstrained CHOMP", "Goal-Set CHOMP (eq. 14)", "Goal-Set CHOMP (eq. 11)"],
+    ):
+        cmap = plt.get_cmap("viridis")
+        n_t = len(trajs_vis)
+        for i, t in enumerate(trajs_vis):
+            ax.plot(t.xi[:, 0], t.xi[:, 1], "-",
+                    color=cmap(i / max(n_t - 1, 1)), alpha=0.5, linewidth=0.8)
+        # Highlight final trajectory
+        ax.plot(trajs_vis[-1].xi[:, 0], trajs_vis[-1].xi[:, 1],
+                "k-", linewidth=2, label="Final")
+        ax.plot(trajs_vis[0].xi[0, 0], trajs_vis[0].xi[0, 1],
+                "go", markersize=10, label="Start")
+        ax.plot(trajs_vis[-1].xi[-1, 0], trajs_vis[-1].xi[-1, 1],
+                "b*", markersize=12, label="End")
+        # Draw goal hyperplane (y = goal[1]) for goal-set plots
+        if "Goal-Set" in title:
+            ax.axhline(config.goal[1], color="purple", linestyle="--",
+                       linewidth=1.5, label=f"y = {config.goal[1]:.2f}")
+        # Draw obstacles
+        for s in env2d.shapes:
+            if isinstance(s, Circle2D):
+                ax.add_patch(plt.Circle(s.c, s.r, color="red",
+                                        fill=False, linewidth=2))
+            elif isinstance(s, Box2D):
+                ax.add_patch(plt.Rectangle(
+                    (s.c[0] - s.hw, s.c[1] - s.hh), 2 * s.hw, 2 * s.hh,
+                    color="red", fill=False, linewidth=2))
+        ax.set_xlim(*config.plot_xlim)
+        ax.set_ylim(*config.plot_ylim)
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(True, alpha=0.3)
+        ax.set_title(title)
+        ax.legend(fontsize=8)
+
+    plt.tight_layout()
+    plt.savefig("chomp_goal_set_comparison.png", dpi=200)
+    plt.show()
+    print("Saved comparison to chomp_goal_set_comparison.png")

@@ -121,7 +121,8 @@ def sample_points_from_obj(obj_id, num_samples=100):
     else:
         # 说明物体没有mesh数据，可能是box, sphere, cylinder 等简单形状，在这种情况下，在简单形状表面均匀采样点
         vertices = []
-        collision_shapes = p.getNumCollisionShapes(obj_id)
+        collision_shapes = p.getCollisionShapeData(obj_id, -1)
+        
         print(f'collision_shapes: {collision_shapes}')
         for i in range(collision_shapes+1):
             child_shape = p.getCollisionShapeData(obj_id, i)

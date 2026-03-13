@@ -1,0 +1,118 @@
+<?xml version="1.0"?>
+<robot name="thin_box">
+  <!-- 参数化 -->
+  <xacro:property name="length" value="1.0" />  <!-- 箱体长度 -->
+  <xacro:property name="width" value="0.5" />   <!-- 箱体宽度 -->
+  <xacro:property name="height" value="0.3" />  <!-- 箱体高度 -->
+  <xacro:property name="wall_thickness" value="0.02" /> <!-- 壁厚 -->
+
+  <!-- 定义底部 -->
+  <link name="bottom_wall">
+    <visual>
+      <geometry>
+        <box size="${length} ${width} ${wall_thickness}" />
+      </geometry>
+      <material name="gray">
+        <color rgba="0.5 0.5 0.5 1.0" />
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="${length} ${width} ${wall_thickness}" />
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- 定义前墙 -->
+  <link name="front_wall">
+    <visual>
+      <geometry>
+        <box size="${length} ${wall_thickness} ${height}" />
+      </geometry>
+      <material name="gray">
+        <color rgba="0.5 0.5 0.5 1.0" />
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="${length} ${wall_thickness} ${height}" />
+      </geometry>
+    </collision>
+  </link>
+  
+  <!-- 定义后墙 -->
+  <link name="back_wall">
+    <visual>
+      <geometry>
+        <box size="${length} ${wall_thickness} ${height}" />
+      </geometry>
+      <material name="gray">
+        <color rgba="0.5 0.5 0.5 1.0" />
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="${length} ${wall_thickness} ${height}" />
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- 定义左墙 -->
+  <link name="left_wall">
+    <visual>
+      <geometry>
+        <box size="${wall_thickness} ${width} ${height}" />
+      </geometry>
+      <material name="gray">
+        <color rgba="0.5 0.5 0.5 1.0" />
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="${wall_thickness} ${width} ${height}" />
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- 定义右墙 -->
+  <link name="right_wall">
+    <visual>
+      <geometry>
+        <box size="${wall_thickness} ${width} ${height}" />
+      </geometry>
+      <material name="gray">
+        <color rgba="0.5 0.5 0.5 1.0" />
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="${wall_thickness} ${width} ${height}" />
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- 定义固定 -->
+  <joint name="bottom_to_front" type="fixed">
+    <parent link="bottom_wall" />
+    <child link="front_wall" />
+    <origin xyz="0 ${width / 2 - wall_thickness / 2} ${height / 2}" rpy="0 0 0" />
+  </joint>
+
+  <joint name="bottom_to_back" type="fixed">
+    <parent link="bottom_wall" />
+    <child link="back_wall" />
+    <origin xyz="0 ${-width / 2 + wall_thickness / 2} ${height / 2}" rpy="0 0 0" />
+  </joint>
+
+  <joint name="bottom_to_left" type="fixed">
+    <parent link="bottom_wall" />
+    <child link="left_wall" />
+    <origin xyz="${-length / 2 + wall_thickness / 2} 0 ${height / 2}" rpy="0 0 0" />
+  </joint>
+
+  <joint name="bottom_to_right" type="fixed">
+    <parent link="bottom_wall" />
+    <child link="right_wall" />
+    <origin xyz="${length / 2 - wall_thickness / 2} 0 ${height / 2}" rpy="0 0 0" />
+  </joint>
+</robot>

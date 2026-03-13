@@ -11,6 +11,7 @@ import os
 import argparse
 from tqdm import tqdm
 from CVAE import CVAE
+from TCVAE import TCVAE
 from cdf_dataloader import get_dataloader
 import sys
 sys.path.append('../2Dexamples')
@@ -42,14 +43,18 @@ def train_cvae(model, dataloader, optimizer, device, epoch, beta=1.0):
     for condition, delta_q in pbar:
         condition = condition.to(device)
         delta_q = delta_q.to(device)
-        
+        d = torch.norm(delta_q, dim=-1).unsqueeze(-1)  # (B, 1, 1)
+        d_recon, mu, logvar = model(d, condition)
+        loss, recon_loss, kl_loss = model.loss_function(
+            d_recon, d, mu, logvar, beta=beta
+        )
         # Forward pass
-        delta_q_recon, mu, logvar = model(delta_q, condition)
+        # delta_q_recon, mu, logvar = model(delta_q, condition)
         
         # Compute loss
-        loss, recon_loss, kl_loss = model.loss_function(
-            delta_q_recon, delta_q, mu, logvar, beta=beta
-        )
+        # loss, recon_loss, kl_loss = model.loss_function(
+        #     delta_q_recon, delta_q, mu, logvar, beta=beta
+        # )
         
         # Backward pass
         optimizer.zero_grad()
@@ -102,7 +107,7 @@ def test_cvae(model, dataloader, device, beta=1.0):
     return total_loss / n_batches, total_recon_loss / n_batches, total_kl_loss / n_batches
 
 
-def visualize_samples(model, cdf, x_idx, device, n_samples=50, save_path=None):
+def visualize_samples(model, cdf, x_idx, device, n_samples=50, save_path=None, ax=None):
     """
     Visualize sampled contact configurations for a given workspace point
     
@@ -115,8 +120,9 @@ def visualize_samples(model, cdf, x_idx, device, n_samples=50, save_path=None):
         save_path: path to save figure
     """
     model.eval()
-    
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=(6, 6))
+    axes = [ax]
     
     # Get ground truth contact configurations for this workspace point
     obj = Circle(center=x_idx, radius=0.001, device=device)
@@ -132,38 +138,45 @@ def visualize_samples(model, cdf, x_idx, device, n_samples=50, save_path=None):
         for idx, q_0 in enumerate(q0_samples):
             # Construct condition
             condition = torch.cat([q_0, x_idx], dim=0).to(device)
-            
             # Sample from model
-            delta_q_samples = model.sample(condition, n_samples=n_samples)  # (n_samples, num_joints)
-            q_contact_samples = q_0.unsqueeze(0) + delta_q_samples  # (n_samples, num_joints)
-            
+            # delta_q_samples = model.sample(condition, n_samples=n_samples)  # (n_samples, num_joints)
+            # q_contact_samples = q_0.unsqueeze(0) + delta_q_samples  # (n_samples, num_joints)
+            d_samples = model.sample(condition, n_samples=n_samples)  # (n_samples, 1)
             # Plot in configuration space
             ax1 = axes[0]
-            ax1.scatter(
-                q_contact_samples[:, 0].cpu().numpy(),
-                q_contact_samples[:, 1].cpu().numpy() if cdf.num_joints > 1 else np.zeros(n_samples),
-                c=[colors[idx]], alpha=0.6, s=20, label=f'q_0 {idx+1} (sampled)'
-            )
+            # ax1.scatter(
+            #     q_contact_samples[:, 0].cpu().numpy(),
+            #     q_contact_samples[:, 1].cpu().numpy() if cdf.num_joints > 1 else np.zeros(n_samples),
+            #     c=[colors[idx]], alpha=0.6, s=20, label=f'q_0 {idx+1} (sampled)'
+            # )
             ax1.scatter(
                 q_0[0].cpu().numpy(),
                 q_0[1].cpu().numpy() if cdf.num_joints > 1 else 0,
                 c=[colors[idx]], marker='*', s=200, edgecolors='black', linewidths=1.5
             )
-            mean_dist, var_dist, mean_contact = mean_distance(delta_q_samples)
-            print(f"q_0 {idx+1}: Mean distance to target object: {mean_dist:.4f}, Variance: {var_dist:.4f}")
-            # 用圆圈表示平均距离
-            circle = plt.Circle(
-                (q_0[0].cpu().numpy(), q_0[1].cpu().numpy() if cdf.num_joints > 1 else 0),
-                mean_dist, color=colors[idx], fill=False, linestyle='--', linewidth=2,
-                label=f'q_0 {idx+1} (mean dist)'
+            for d_contact in d_samples:
+                circle = plt.Circle(
+                    (q_0[0].cpu().numpy(),
+                    q_0[1].cpu().numpy() if cdf.num_joints > 1 else 0),
+                    d_contact,
+                    color=colors[idx], fill=False, linestyle=':', linewidth=1.0,
                 )
-            ax1.add_patch(circle)
-            ax1.scatter(
-                q_0[0].cpu().numpy() + mean_contact[0].cpu().numpy(),
-                q_0[1].cpu().numpy() + mean_contact[1].cpu().numpy() if cdf.num_joints > 1 else 0,
-                c=[colors[idx]], marker='D', s=100, edgecolors='black', linewidths=1.5,
-                label=f'q_0 {idx+1} (mean contact)'
-            )
+                ax1.add_patch(circle)
+            # mean_dist, var_dist, mean_contact = mean_distance(delta_q_samples)
+            # print(f"q_0 {idx+1}: Mean distance to target object: {mean_dist:.4f}, Variance: {var_dist:.4f}")
+            # 用圆圈表示平均距离
+            # circle = plt.Circle(
+            #     (q_0[0].cpu().numpy(), q_0[1].cpu().numpy() if cdf.num_joints > 1 else 0),
+            #     mean_dist, color=colors[idx], fill=False, linestyle='--', linewidth=2,
+            #     label=f'q_0 {idx+1} (mean dist)'
+            #     )
+            # ax1.add_patch(circle)
+            # ax1.scatter(
+            #     q_0[0].cpu().numpy() + mean_contact[0].cpu().numpy(),
+            #     q_0[1].cpu().numpy() + mean_contact[1].cpu().numpy() if cdf.num_joints > 1 else 0,
+            #     c=[colors[idx]], marker='D', s=100, edgecolors='black', linewidths=1.5,
+            #     label=f'q_0 {idx+1} (mean contact)'
+            # )
             # 固定坐标轴范围
             ax1.set_xlim(-np.pi, np.pi)
             ax1.set_ylim(-np.pi, np.pi)
@@ -186,18 +199,6 @@ def visualize_samples(model, cdf, x_idx, device, n_samples=50, save_path=None):
     ax1.set_xlim(-np.pi, np.pi)
     ax1.set_ylim(-np.pi, np.pi)
     
-    # Plot workspace
-    ax2 = axes[1]
-    ax2.scatter(x_idx[0].cpu().numpy(), x_idx[1].cpu().numpy(), 
-                c='red', marker='o', s=200, label='Target Point', zorder=5)
-    ax2.set_xlabel('x', fontsize=12)
-    ax2.set_ylabel('y', fontsize=12)
-    ax2.set_title('Workspace Target Point', fontsize=12)
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-    ax2.set_xlim(cdf.task_space[0][0], cdf.task_space[1][0])
-    ax2.set_ylim(cdf.task_space[0][1], cdf.task_space[1][1])
-    ax2.set_aspect('equal')
     
     plt.tight_layout()
     
@@ -207,6 +208,226 @@ def visualize_samples(model, cdf, x_idx, device, n_samples=50, save_path=None):
     
     plt.show()
 
+def visualize_vector_field(model, cdf, x_test, device, n_samples=50, save_path=None, ax=None):
+    """
+    Visualize the vector field of predicted distances over the workspace
+    Args:
+        model: trained CVAE model
+        cdf: CDF2D instance
+        x_test: workspace point (2,)
+        device: cuda or cpu
+        n_samples: number of samples to generate
+        save_path: path to save figure
+    """
+    model.eval()
+    # Create a grid of points in the configuration space
+    # sample from cdf.q_min to cdf.q_max
+    q1 = torch.linspace(cdf.q_min[0], cdf.q_max[0], steps=20)
+    q2 = torch.linspace(cdf.q_min[1], cdf.q_max[1], steps=20)
+    Q1, Q2 = torch.meshgrid(q1, q2, indexing='ij')
+    Q_grid = torch.stack([Q1.flatten(), Q2.flatten()], dim=-1).to(device)  # (N, 2)
+    # For each q_0 in the grid, compute gradient of predicted distance to q_0
+    U = torch.zeros(Q_grid.shape).to(device)
+    M = torch.zeros(Q_grid.shape).to(device)
+    V = torch.zeros(Q_grid.shape).to(device)
+    for i, q_0 in enumerate(Q_grid):
+        # Construct condition
+        condition = torch.cat([q_0, x_test], dim=0).expand(1, -1).to(device)  # (1, condition_dim)
+        gradients, mean, var, _ = model.compute_vector_field(condition, n_samples=n_samples)  # (condition_dim,)
+        # Extract gradient w.r.t q_0
+        grad_q0 = gradients[0, :cdf.num_joints]  # (num_joints,)
+        U[i] = -grad_q0  # Negative gradient points towards decreasing distance
+        M[i] = mean[0, :cdf.num_joints]
+        V[i] = var[0, :cdf.num_joints]
+    U = U.cpu().numpy()
+    M = M.cpu().numpy()
+    V = V.cpu().numpy()
+    Q_grid = Q_grid.cpu().numpy()
+    # Reshape for quiver plot
+    U1 = U[:, 0].reshape(Q1.shape)
+    U2 = U[:, 1].reshape(Q2.shape)
+    Q1 = Q1.cpu().numpy()
+    Q2 = Q2.cpu().numpy()
+    # Plot vector field
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6, 6))
+    ax.quiver(Q1, Q2, U1, U2, color='blue', alpha=0.6)
+    # 在q_0位置用椭圆表示均值和方差
+    for i in range(Q_grid.shape[0]):
+        mean_vec = M[i]
+        var_vec = V[i]
+        ellipse = plt.matplotlib.patches.Ellipse(
+            (Q_grid[i, 0], Q_grid[i, 1]),
+            width=2*np.sqrt(var_vec[0]),
+            height=2*np.sqrt(var_vec[1]),
+            angle=0,
+            edgecolor='red',
+            facecolor='none',
+            linestyle='--',
+            alpha=0.5
+        )
+        ax.add_patch(ellipse)
+    ax.set_xlabel('q1', fontsize=12)
+    ax.set_ylabel('q2', fontsize=12)
+    ax.set_title('Vector Field of Predicted Distance Gradient', fontsize=12)
+    ax.set_xlim(cdf.q_min[0].cpu().numpy(), cdf.q_max[0].cpu().numpy())
+    ax.set_ylim(cdf.q_min[1].cpu().numpy(), cdf.q_max[1].cpu().numpy())
+    ax.set_aspect('equal')
+    plt.grid(True, alpha=0.3)
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Saved vector field visualization to {save_path}")
+    plt.show()
+    
+def visualize_gradient_magnitude(model, cdf, x_test, device, n_samples=50, save_path=None, ax=None):
+    """
+    Visualize the vector field of predicted distances over the workspace
+    Args:
+        model: trained CVAE model
+        cdf: CDF2D instance
+        x_test: workspace point (2,)
+        device: cuda or cpu
+        n_samples: number of samples to generate
+        save_path: path to save figure
+    """
+    model.eval()
+    # Create a grid of points in the configuration space
+    # sample from cdf.q_min to cdf.q_max
+    q1 = torch.linspace(cdf.q_min[0], cdf.q_max[0], steps=20)
+    q2 = torch.linspace(cdf.q_min[1], cdf.q_max[1], steps=20)
+    Q1, Q2 = torch.meshgrid(q1, q2, indexing='ij')
+    Q_grid = torch.stack([Q1.flatten(), Q2.flatten()], dim=-1).to(device)  # (N, 2)
+    # For each q_0 in the grid, compute gradient of predicted distance to q_0
+    U = torch.zeros(Q_grid.shape).to(device)
+    M = torch.zeros(Q_grid.shape).to(device)
+    V = torch.zeros(Q_grid.shape).to(device)
+    for i, q_0 in enumerate(Q_grid):
+        # Construct condition
+        condition = torch.cat([q_0, x_test], dim=0).expand(1, -1).to(device)  # (1, condition_dim)
+        _, mean, _, _ = model.compute_vector_field(condition, n_samples=n_samples)  # (condition_dim,)
+        # Extract gradient w.r.t q_0
+        M[i] = mean[0, :cdf.num_joints]
+    M = M.cpu().numpy()
+    magnitude = np.linalg.norm(M, axis=-1)
+    print('magnitude shape:',magnitude.shape)
+    Q_grid = Q_grid.cpu().numpy()
+    
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6, 6))
+    
+    sc = ax.contourf(
+        Q_grid[:, 0].reshape(Q1.shape),
+        Q_grid[:, 1].reshape(Q2.shape),
+        np.linalg.norm(M, axis=-1).reshape(Q1.shape),
+        levels=20,
+        cmap='viridis'
+    )
+    ax.set_xlabel('q1', fontsize=12)
+    ax.set_ylabel('q2', fontsize=12)
+    ax.set_title('Vector Field of Predicted Distance Gradient', fontsize=12)
+    ax.set_xlim(cdf.q_min[0].cpu().numpy(), cdf.q_max[0].cpu().numpy())
+    ax.set_ylim(cdf.q_min[1].cpu().numpy(), cdf.q_max[1].cpu().numpy())
+    ax.set_aspect('equal')
+    ax.figure.colorbar(sc, ax=ax, label='Gradient Magnitude')
+    plt.grid(True, alpha=0.3)
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Saved vector field visualization to {save_path}")
+    plt.show()
+
+def visualize_d_pred(model, cdf, x_test, device, n_samples=50, save_path=None):
+    """
+    Visualize the vector field of predicted distances over the workspace
+    Args:
+        model: trained CVAE model
+        cdf: CDF2D instance
+        x_test: workspace point (2,)
+        device: cuda or cpu
+        n_samples: number of samples to generate(the d drawn is averaged)
+        save_path: path to save figure
+    """
+    model.eval()
+    # Create a grid of points in the configuration space
+    # sample from cdf.q_min to cdf.q_max
+    q1 = torch.linspace(cdf.q_min[0], cdf.q_max[0], steps=20)
+    q2 = torch.linspace(cdf.q_min[1], cdf.q_max[1], steps=20)
+    Q1, Q2 = torch.meshgrid(q1, q2, indexing='ij')
+    Q_grid = torch.stack([Q1.flatten(), Q2.flatten()], dim=-1).to(device)  # (N, 2)
+    # For each q_0 in the grid, compute gradient of predicted distance to q_0
+    D = torch.zeros(Q_grid.shape[0], 1).to(device)
+    for i, q_0 in enumerate(Q_grid):
+        # Construct condition
+        condition = torch.cat([q_0, x_test], dim=0).expand(1, -1).to(device)  # (1, condition_dim)
+        d = model.sample(condition, n_samples=n_samples)  # (n_samples, 1)
+        d = d.squeeze(-1)  # (n_samples,)
+        D[i] = d.mean(dim=-1)
+    GT_D = torch.zeros_like(D)
+    ERR = torch.zeros_like(D)
+    for i, q_0 in enumerate(Q_grid):
+        GT_D[i] = cdf.calculate_cdf(q_0.unsqueeze(0), [Circle(center=x_test, radius=0.001, device=device)], method='online_computation', return_grad=False) # use offline_grid for speed
+        if GT_D[i] == float('inf'):
+            GT_D[i] = torch.tensor(0.0).to(device)
+        ERR[i] = torch.abs(D[i] - GT_D[i])
+    D = D.detach().cpu().numpy()
+    Q_grid = Q_grid.cpu().numpy()
+    GT_D = GT_D.detach().cpu().numpy()
+    ERR = ERR.detach().cpu().numpy()
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    ax = axes[0]
+    ax1 = axes[1]
+    ax2 = axes[2]
+    # Plot d_pred
+    sc = ax.contourf(
+        Q_grid[:, 0].reshape(Q1.shape),
+        Q_grid[:, 1].reshape(Q2.shape),
+        D.reshape(Q1.shape),
+        levels=20,
+        cmap='viridis'
+    )
+    ax.set_xlabel('q1', fontsize=12)
+    ax.set_ylabel('q2', fontsize=12)
+    ax.set_title('d_pred', fontsize=12)
+    ax.set_xlim(cdf.q_min[0].cpu().numpy(), cdf.q_max[0].cpu().numpy())
+    ax.set_ylim(cdf.q_min[1].cpu().numpy(), cdf.q_max[1].cpu().numpy())
+    ax.set_aspect('equal')
+    ax.figure.colorbar(sc, ax=ax, label='Predicted Distance d_pred')
+    plt.grid(True, alpha=0.3)
+    # Plot GT d
+    sc1 = ax1.contourf(
+        Q_grid[:, 0].reshape(Q1.shape),
+        Q_grid[:, 1].reshape(Q2.shape),
+        GT_D.reshape(Q1.shape),
+        levels=20,
+        cmap='viridis'
+    )
+    ax1.set_xlabel('q1', fontsize=12)
+    ax1.set_ylabel('q2', fontsize=12)
+    ax1.set_title('GT d', fontsize=12)
+    ax1.set_xlim(cdf.q_min[0].cpu().numpy(), cdf.q_max[0].cpu().numpy())
+    ax1.set_ylim(cdf.q_min[1].cpu().numpy(), cdf.q_max[1].cpu().numpy())
+    ax1.set_aspect('equal')
+    ax1.figure.colorbar(sc1, ax=ax1, label='Ground Truth Distance GT d')
+    plt.grid(True, alpha=0.3)
+    # Plot Error
+    sc2 = ax2.contourf(
+        Q_grid[:, 0].reshape(Q1.shape),
+        Q_grid[:, 1].reshape(Q2.shape),
+        ERR.reshape(Q1.shape),
+        levels=20,
+        cmap='viridis'
+    )
+    ax2.set_xlabel('q1', fontsize=12)
+    ax2.set_ylabel('q2', fontsize=12)
+    ax2.set_title('Error', fontsize=12)
+    ax2.set_xlim(cdf.q_min[0].cpu().numpy(), cdf.q_max[0].cpu().numpy())
+    ax2.set_ylim(cdf.q_min[1].cpu().numpy(), cdf.q_max[1].cpu().numpy())
+    ax2.set_aspect('equal')
+    ax2.figure.colorbar(sc2, ax=ax2, label='Absolute Error')
+    plt.grid(True, alpha=0.3)
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Saved vector field visualization to {save_path}")
+    plt.show()
 
 def evaluate_accuracy(model, cdf, device, n_test_points=10, n_samples=20):
     """
@@ -246,14 +467,17 @@ def evaluate_accuracy(model, cdf, device, n_test_points=10, n_samples=20):
             # Compute forward kinematics for sampled configs
             # Use robot to compute end-effector positions
             obj = Circle(center=x_idx, radius=0.001, device=device)
-            sdf_values = cdf.inference_sdf(q_contact_samples, [obj])
+            gt_cdf = cdf.calculate_cdf(q_0.unsqueeze(0),[obj],method='online_computation',return_grad = False)
+            if gt_cdf == float('inf'):
+                print('No valid contact configuration for this test point, skipping...')
+                continue
             
             # Compute error (should be close to 0 for contact)
-            mean_error = torch.abs(sdf_values).mean().item()
+            mean_error = torch.abs(gt_cdf).mean().item()
             errors.append(mean_error)
     
     print(f"\nEvaluation Results:")
-    print(f"  Mean SDF error: {np.mean(errors):.4f} ± {np.std(errors):.4f}")
+    print(f"  Mean CDF error: {np.mean(errors):.4f} ± {np.std(errors):.4f}")
     print(f"  Min error: {np.min(errors):.4f}")
     print(f"  Max error: {np.max(errors):.4f}")
     
@@ -283,20 +507,34 @@ def main(args):
     cdf = CDF2D(device)
     
     # Model parameters
-    data_dim = args.num_joints  # Δq dimension
+    # data_dim = args.num_joints  # Δq dimension
+    data_dim = 1  # distance feature dimension
     condition_dim = args.num_joints + 2  # [q_0, x_idx]
-    # Initialize model
-    model = CVAE(
+    # # Initialize model
+    # model = CVAE(
+    #     data_dim=data_dim,
+    #     condition_dim=condition_dim,
+    #     latent_dim=args.latent_dim,
+    #     hidden_dims=args.hidden_dims
+    # ).to(device)
+    # Create model
+    model = TCVAE(
         data_dim=data_dim,
         condition_dim=condition_dim,
         latent_dim=args.latent_dim,
-        hidden_dims=args.hidden_dims
+        embed_dim=128,
+        num_encoder_layers=2,
+        num_decoder_layers=2,
+        num_heads=4,
+        ff_dim=512,
+        dropout=0.1
     ).to(device)
     
     print(f"\nModel architecture:")
     print(model)
     print(f"\nTotal parameters: {sum(p.numel() for p in model.parameters())}")
     # train or test
+    print(f'args: {args}')
     if args.train:
         # Get dataloader
         train_dataloader = get_dataloader(
@@ -304,7 +542,9 @@ def main(args):
             batch_size=args.batch_size,
             num_joints=args.num_joints,
             samples_per_grid=args.samples_per_grid,
-            shuffle=True
+            shuffle=True,
+            sampling_strategy='A-q',
+            gamma=args.gamma
         )
         
         
@@ -346,11 +586,11 @@ def main(args):
                 }, args.save_path)
                 print(f"  -> Saved best model (loss: {train_loss:.4f})")
             
-            # Periodic visualization
-            if epoch % args.vis_interval == 0:
-                x_test = torch.tensor([0.0, 2.0]).to(device)  # Test point
-                vis_path = args.save_path.replace('.pth', f'_epoch{epoch}_vis.png')
-                visualize_samples(model, cdf, x_test, device, n_samples=50, save_path=vis_path)
+            # # Periodic visualization
+            # if epoch % args.vis_interval == 0:
+            #     x_test = torch.tensor([0.0, 2.0]).to(device)  # Test point
+            #     vis_path = args.save_path.replace('.pth', f'_epoch{epoch}_vis.png')
+            #     visualize_samples(model, cdf, x_test, device, n_samples=50, save_path=vis_path)
         
         # Plot training curve
         plt.figure(figsize=(10, 5))
@@ -383,10 +623,15 @@ def main(args):
     ]
     
     for i, x_test in enumerate(test_points):
-        vis_path = args.save_path.replace('.pth', f'_final_test{i+1}.png')
-        visualize_samples(model, cdf, x_test, device, n_samples=100, save_path=vis_path)
-
-
+        fig, ax = plt.subplots(1, 1, figsize=(6, 6))
+        # vis_path = args.save_path.replace('.pth', f'_final_test{i+1}.png')
+        # visualize_samples(model, cdf, x_test, device, n_samples=100, save_path=vis_path,ax = ax)
+        # vector_field_vis_path = args.save_path.replace('.pth', f'_vector_field_test{i+1}.png')
+        # visualize_vector_field(model, cdf, x_test, device, n_samples=50, save_path=vector_field_vis_path,ax = ax)
+        # gradient_magnitude_vis_path = args.save_path.replace('.pth', f'_gradient_magnitude_test{i+1}.png')
+        # visualize_gradient_magnitude(model, cdf, x_test, device, n_samples=50, save_path=gradient_magnitude_vis_path,ax = ax)
+        d_pred_vis_path = args.save_path.replace('.pth', f'_d_pred_test{i+1}.png')
+        visualize_d_pred(model, cdf, x_test, device, n_samples=50, save_path=d_pred_vis_path)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train CVAE for contact configuration distribution')
