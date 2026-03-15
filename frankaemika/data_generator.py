@@ -12,7 +12,7 @@ CUR_DIR = os.path.dirname(os.path.realpath(__file__))
 import numpy as np
 import sys
 sys.path.append(os.path.join(CUR_DIR,'../../RDF'))
-from panda_layer.robot_layer import RobotLayer
+from panda_layers.robot_layer import RobotLayer
 from bf_sdf import BPSDF
 from torchmin import minimize
 import argparse

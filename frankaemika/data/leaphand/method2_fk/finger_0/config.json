@@ -1,0 +1,66 @@
+{
+  "method": "method2_fk",
+  "robot": "leaphand",
+  "serial_idx": 0,
+  "finger_links": [
+    "palm_base",
+    "palm_lower_left",
+    "mcp_joint",
+    "pip",
+    "dip",
+    "fingertip"
+  ],
+  "links_with_mesh": [
+    "palm_lower_left",
+    "mcp_joint",
+    "pip",
+    "dip",
+    "fingertip"
+  ],
+  "dof": 4,
+  "workspace": {
+    "min": [
+      -0.20000000298023224,
+      -0.20000000298023224,
+      -0.10000000149011612
+    ],
+    "max": [
+      0.05999999865889549,
+      0.019999999552965164,
+      0.10000000149011612
+    ]
+  },
+  "joint_limits_soft": {
+    "min": [
+      -0.05960005521774292,
+      -0.83760005235672,
+      -0.2668999433517456,
+      -0.12519997358322144
+    ],
+    "max": [
+      1.975600004196167,
+      0.83760005235672,
+      1.645900011062622,
+      1.8012001514434814
+    ]
+  },
+  "n_task_discrete": 10,
+  "n_config_discrete": 8,
+  "total_task_points": 1000,
+  "total_config_points": 4096,
+  "contact_threshold_m": 0.005,
+  "config_batch_size": 200,
+  "dist_sub_batch_size": 5,
+  "task_batch_size": 100,
+  "device": "cuda:0",
+  "timestamp": "2026-03-13T04:33:52.967431",
+  "total_time_seconds": 8.31,
+  "stats": {
+    "total_points": 1000,
+    "nonempty_points": 236,
+    "coverage_ratio": 0.236,
+    "mean_configs_per_point": 86.152,
+    "max_configs_per_point": 4096,
+    "total_contact_pairs": 86152
+  }
+}

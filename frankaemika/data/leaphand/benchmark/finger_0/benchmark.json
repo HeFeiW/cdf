@@ -1,0 +1,50 @@
+{
+  "timestamp": "2026-03-13T04:34:04.618938",
+  "device": "cuda:0",
+  "robot": "leaphand",
+  "serial_idx": 0,
+  "dof": 4,
+  "workspace": {
+    "min": [
+      -0.20000000298023224,
+      -0.20000000298023224,
+      -0.10000000149011612
+    ],
+    "max": [
+      0.05999999865889549,
+      0.019999999552965164,
+      0.10000000149011612
+    ]
+  },
+  "results": {
+    "method2": {
+      "time_s": 8.34,
+      "stats": {
+        "total_points": 1000,
+        "nonempty_points": 236,
+        "coverage_ratio": 0.236,
+        "mean_configs_per_point": 86.152,
+        "max_configs_per_point": 4096,
+        "total_contact_pairs": 86152
+      },
+      "n_task": 10,
+      "n_config": 8,
+      "total_configs": 4096
+    },
+    "method1": {
+      "time_per_point_s": 0.116,
+      "estimated_full_time_s": 116.4,
+      "tested_n_points": 100,
+      "stats_partial": {
+        "total_points": 100,
+        "nonempty_points": 0,
+        "coverage_ratio": 0.0,
+        "mean_configs_per_point": 0.0,
+        "max_configs_per_point": 0,
+        "total_contact_pairs": 0
+      },
+      "n_task": 10,
+      "batchsize": 5000
+    }
+  }
+}

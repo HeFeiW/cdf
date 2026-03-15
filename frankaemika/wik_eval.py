@@ -15,7 +15,7 @@ import math
 CUR_PATH = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(os.path.join(CUR_PATH,'../../RDF'))
 from mlp import MLPRegression
-from panda_layer.panda_layer import PandaLayer
+from panda_layers.panda_layer import PandaLayer
 import bf_sdf
 from nn_cdf import CDF
 import copy
