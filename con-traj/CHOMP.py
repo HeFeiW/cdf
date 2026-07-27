@@ -387,31 +387,47 @@ def build_smoothness_A_free_end(n: int, D: int, damping: float = 1e-6) -> np.nda
 class GoalSetConstraint(ABC):
     """Abstract interface for a goal-set constraint applied to the end point.
 
-    The constraint is  h(q_n) = 0  where q_n is the last waypoint.
-    Subclasses must implement :meth:`query` which returns both the constraint
-    value **and** its Jacobian at queried point.
+    子类只需实现 :meth:`distance`，返回一个标量"距离"（或评分函数值）及其
+    关于终点构型的梯度。约束在 d(q_n) = 0 时满足。
 
-    This interface is intentionally minimal: it is only a *query* oracle for
-    the endpoint; it does not modify the trajectory itself.
+    :meth:`query` 由基类从 :meth:`distance` 自动推导：
+        h      = [d(q_n)]            ∈ R^1
+        C_tilde = (∂d/∂q_n)^T        ∈ R^{1 × D}
+    优化器调用 query()，子类无需覆盖它。
     """
 
     @abstractmethod
-    def query(self, q_n: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Evaluate the goal-set constraint at the endpoint q_n.
+    def distance(self, q_n: np.ndarray) -> Tuple[float, np.ndarray]:
+        """标量距离（或评分函数）及其梯度。
 
         Parameters
         ----------
         q_n : np.ndarray, shape (D,)
-            Current end-point configuration.
+            当前终点构型。
 
         Returns
         -------
-        h : np.ndarray, shape (k,)
-            Constraint residual.  The constraint is satisfied when h = 0.
-        C_tilde : np.ndarray, shape (k, D)
-            Jacobian  dh/dq_n  evaluated at q_n.
+        d : float
+            到目标集的距离（或评分值）；d = 0 表示约束满足。
+            值可以是有符号的（如超平面的有符号距离）。
+        grad_d : np.ndarray, shape (D,)
+            ∂d/∂q_n，即距离关于终点构型的梯度。
         """
         pass
+
+    def query(self, q_n: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """由 :meth:`distance` 自动推导的约束残差与 Jacobian。
+
+        将标量距离包装为优化器所需的向量形式：
+            h      = [d]          shape (1,)
+            C_tilde = grad_d^T    shape (1, D)
+
+        优化器调用此方法；子类不需要覆盖它。
+        """
+        d, grad_d = self.distance(q_n)
+        h = np.array([float(d)])
+        C_tilde = np.asarray(grad_d, dtype=float)[np.newaxis, :]   # (1, D)
+        return h, C_tilde
 
 
 # ==================== CHOMP with Goal-Set Constraints ====================
@@ -682,35 +698,39 @@ class CHOMPGoalSetOptimizer:
         return traj
 
 
-# ==================== Example GoalSetConstraint implementations ====================
+# ==================== GoalSetConstraint implementations ====================
 
 class TargetPointConstraint(GoalSetConstraint):
-    """Constraint: the endpoint must reach a specific target point q_goal.
+    """约束：终点必须到达指定目标点 q_goal（迁移自旧接口）。
 
-    h(q_n) = q_n - q_goal   (shape (D,))
-    C_tilde = I_D            (shape (D, D))
+    d(q_n)   = ‖q_n - q_goal‖           (到目标点的欧氏距离，非负)
+    ∂d/∂q_n = (q_n - q_goal) / ‖…‖     (指向目标点的单位向量)
 
-    When h = 0 the endpoint coincides with q_goal exactly.
+    d = 0 时终点与目标点重合。
+    注：相比旧接口（D 维残差），此处退化为 1 维标量距离约束，
+        但收敛后终点同样精确落在 q_goal 处。
     """
 
     def __init__(self, q_goal: np.ndarray):
         self.q_goal = np.asarray(q_goal, dtype=float)
 
-    def query(self, q_n: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        h = q_n - self.q_goal                           # (D,)
-        C_tilde = np.eye(self.q_goal.shape[0])          # (D, D)
-        return h, C_tilde
+    def distance(self, q_n: np.ndarray) -> Tuple[float, np.ndarray]:
+        diff = q_n - self.q_goal
+        dist = float(np.linalg.norm(diff))
+        if dist < 1e-12:
+            return 0.0, np.zeros_like(q_n)
+        return dist, diff / dist
 
 
 class TargetHyperplaneConstraint(GoalSetConstraint):
-    """Constraint: the endpoint must lie on a hyperplane n^T q = d.
+    """约束：终点必须落在超平面 n^T q = offset 上（迁移自旧接口）。
 
-    h(q_n) = [n^T q_n - d]   (shape (1,))
-    C_tilde = n^T             (shape (1, D))
+    d(q_n)   = n^T q_n - offset    (沿法线方向的有符号距离)
+    ∂d/∂q_n = n
 
-    This is the typical "goal set" described in the paper: a (D-1)-dimensional
-    manifold of valid endpoints.  The optimiser is free to choose *which* point
-    on the hyperplane to reach, trading off smoothness and obstacle avoidance.
+    d = 0 时终点恰好在超平面上。d 可正可负，优化器将其驱动至 0。
+    这是论文中典型的"目标集"：一个 (D-1) 维流形，
+    优化器可自由选择超平面上哪个点作为目标。
     """
 
     def __init__(self, normal: np.ndarray, offset: float):
@@ -718,45 +738,73 @@ class TargetHyperplaneConstraint(GoalSetConstraint):
         Parameters
         ----------
         normal : np.ndarray, shape (D,)
-            Unit (or non-unit) normal of the hyperplane.
+            超平面法向量（无需单位化）。
         offset : float
-            Scalar d such that the constraint is n^T q = d.
+            标量 d，使约束为 n^T q = d。
         """
         self.normal = np.asarray(normal, dtype=float)
         self.offset = float(offset)
 
-    def query(self, q_n: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        h = np.array([float(self.normal @ q_n) - self.offset])   # (1,)
-        C_tilde = self.normal[np.newaxis, :]                      # (1, D)
-        return h, C_tilde
+    def distance(self, q_n: np.ndarray) -> Tuple[float, np.ndarray]:
+        d = float(self.normal @ q_n) - self.offset
+        return d, self.normal.copy()
 
 
 class TargetRegionConstraint(GoalSetConstraint):
-    """Constraint: the endpoint must lie inside a ball of radius r around q_goal.
+    """约束：终点必须进入以 q_goal 为中心、半径 r 的球内（迁移自旧接口）。
 
-    Outside the ball:  h(q_n) = ||q_n - q_goal|| - r  (active)
-    Inside the ball:   h(q_n) = 0                      (inactive — no force)
+    球外（active）:  d(q_n) = ‖q_n - q_goal‖ - r,  ∂d/∂q_n = (q_n-q_goal)/‖…‖
+    球内（inactive）: d = 0,  ∂d/∂q_n = 0
 
-    C_tilde = (q_n - q_goal)^T / ||q_n - q_goal||     (shape (1, D))
-
-    This represents a soft goal-region: the optimiser is free once the endpoint
-    enters the ball.
+    这是一个软目标区域：终点一旦进入球内，约束力即消失。
     """
 
     def __init__(self, q_goal: np.ndarray, radius: float):
         self.q_goal = np.asarray(q_goal, dtype=float)
         self.radius = float(radius)
 
-    def query(self, q_n: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def distance(self, q_n: np.ndarray) -> Tuple[float, np.ndarray]:
         diff = q_n - self.q_goal
-        dist = np.linalg.norm(diff)
+        dist = float(np.linalg.norm(diff))
         violation = dist - self.radius
         if violation <= 0.0:
-            D = q_n.shape[0]
-            return np.zeros(1), np.zeros((1, D))
-        h = np.array([violation])
-        C_tilde = (diff / dist)[np.newaxis, :]                    # (1, D)
-        return h, C_tilde
+            return 0.0, np.zeros_like(q_n)
+        return violation, diff / dist
+
+
+class TargetCircleConstraint(GoalSetConstraint):
+    """约束：终点必须落在以 center 为圆心、半径 radius 的圆环上。
+
+    这是一个 1 维目标集（二维构型空间中的圆弧），优化器可自由选择
+    圆上哪个点作为终点，同时兼顾平滑性与避障代价。
+
+    d(q_n)   = ‖q_n - center‖ - radius
+               （有符号距离：圆内 d < 0，圆外 d > 0，恰好在圆上 d = 0）
+    ∂d/∂q_n = (q_n - center) / ‖q_n - center‖
+               （从圆心指向 q_n 的单位向量）
+    """
+
+    def __init__(self, center: np.ndarray, radius: float):
+        """
+        Parameters
+        ----------
+        center : np.ndarray, shape (D,)
+            目标圆的圆心（构型空间坐标）。
+        radius : float
+            目标圆的半径。
+        """
+        self.center = np.asarray(center, dtype=float)
+        self.radius = float(radius)
+
+    def distance(self, q_n: np.ndarray) -> Tuple[float, np.ndarray]:
+        diff = q_n - self.center
+        dist = float(np.linalg.norm(diff))
+        if dist < 1e-12:
+            # 恰好在圆心处：按 x 轴正方向给出任意梯度方向
+            return -self.radius, np.array([1.0, 0.0])
+        d = dist - self.radius              # 有符号距离
+        grad_d = diff / dist               # 单位径向向量
+        return d, grad_d
 
 
 # ----------------------- Configuration-based utilities -----------------------
@@ -1086,3 +1134,76 @@ if __name__ == "__main__":
     plt.savefig("chomp_goal_set_comparison.png", dpi=200)
     plt.show()
     print("Saved comparison to chomp_goal_set_comparison.png")
+
+    # ==================================================================
+    # Circle Goal-Set CHOMP demo (TargetCircleConstraint)
+    # ==================================================================
+    print("\n--- Circle Goal-Set CHOMP demo ---")
+
+    # 目标集：圆心 [0.7, 0.5]，半径 0.25 的圆环
+    # 优化器可自由选择圆上任意点作为终点
+    circle_center = np.array([0.5, 0.7])
+    circle_radius = 0.05
+    circle_constraint = TargetCircleConstraint(center=circle_center, radius=circle_radius)
+
+    # 以线性插值轨迹为初始轨迹（与之前相同起点/终点）
+    traj_circle = Trajectory(waypoints=init_xi_gs.copy(), dt=config.dt)
+
+    print(f"Initial endpoint: {traj_circle.xi[-1]}")
+    print(f"Target circle: center={circle_center}, r={circle_radius}")
+    d_init, _ = circle_constraint.distance(traj_circle.xi[-1])
+    print(f"Initial distance to circle: {d_init:.6f}")
+
+    # 运行 goal-set CHOMP（eq. 14）
+    trajs_circle = [traj_circle]
+    cur_circle = traj_circle
+    for k in range(config.num_iterations):
+        cur_circle = goal_set_optimizer.step_goalset(cur_circle, circle_constraint)
+        trajs_circle.append(cur_circle)
+
+    d_final, _ = circle_constraint.distance(cur_circle.xi[-1])
+    print(f"Final endpoint: {cur_circle.xi[-1]}  |  distance to circle = {d_final:.6f}")
+
+    # --- 可视化 ---
+    fig, ax = plt.subplots(figsize=(7, 7))
+    cmap_c = plt.get_cmap("plasma")
+    n_tc = len(trajs_circle)
+    for i, t in enumerate(trajs_circle):
+        ax.plot(t.xi[:, 0], t.xi[:, 1], "-",
+                color=cmap_c(i / max(n_tc - 1, 1)), alpha=0.5, linewidth=0.8)
+
+    # 高亮最终轨迹与起终点
+    ax.plot(trajs_circle[-1].xi[:, 0], trajs_circle[-1].xi[:, 1],
+            "k-", linewidth=2, label="Final trajectory")
+    ax.plot(trajs_circle[0].xi[0, 0], trajs_circle[0].xi[0, 1],
+            "go", markersize=10, label="Start")
+    ax.plot(trajs_circle[-1].xi[-1, 0], trajs_circle[-1].xi[-1, 1],
+            "b*", markersize=12, label=f"End (d={d_final:.4f})")
+
+    # 绘制目标圆环（紫色虚线）
+    theta = np.linspace(0, 2 * np.pi, 300)
+    ax.plot(circle_center[0] + circle_radius * np.cos(theta),
+            circle_center[1] + circle_radius * np.sin(theta),
+            color="purple", linestyle="--", linewidth=2,
+            label=f"Target circle (r={circle_radius})")
+    ax.plot(*circle_center, "p", color="purple", markersize=8, label="Circle center")
+
+    # 绘制障碍物
+    for s in env2d.shapes:
+        if isinstance(s, Circle2D):
+            ax.add_patch(plt.Circle(s.c, s.r, color="red", fill=False, linewidth=2))
+        elif isinstance(s, Box2D):
+            ax.add_patch(plt.Rectangle(
+                (s.c[0] - s.hw, s.c[1] - s.hh), 2 * s.hw, 2 * s.hh,
+                color="red", fill=False, linewidth=2))
+
+    ax.set_xlim(*config.plot_xlim)
+    ax.set_ylim(*config.plot_ylim)
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(True, alpha=0.3)
+    ax.set_title("Circle Goal-Set CHOMP (TargetCircleConstraint, eq. 14)")
+    ax.legend(fontsize=9)
+    plt.tight_layout()
+    plt.savefig("chomp_circle_goal_set.png", dpi=200)
+    plt.show()
+    print("Saved to chomp_circle_goal_set.png")

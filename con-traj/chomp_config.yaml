@@ -9,7 +9,7 @@ trajectory:
 # Start and goal positions
 task:
   start: [0.1, 0.1]         # Start position
-  goal: [0.4, 0.9]          # Goal position
+  goal: [0.4, 0.7]          # Goal position
 
 # Obstacle configuration
 obstacles:

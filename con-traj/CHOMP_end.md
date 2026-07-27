@@ -161,6 +161,62 @@ $\xi_{t+1} = \xi_t - \frac{1}{\eta_t} A^{-1} g_t + \frac{1}{\eta_t \beta} B_n^T 
 
 如果需要我进一步推导某个公式的细节，或将其实现为伪代码，也可以告诉我。
 
+---
+
+## 八、新版目标集约束接口（基于距离/评分函数）
+
+### 1. 设计动机
+
+原始接口 `GoalSetConstraint.query()` 直接返回约束残差向量 $h \in \mathbb{R}^k$ 和其 Jacobian $\tilde{C} \in \mathbb{R}^{k \times D}$。这种形式灵活，但对于"到某个目标集的距离"这类最常见的约束，需要手动计算两个量。
+
+新版接口统一抽象为**标量距离（或评分函数）**：
+
+> 子类只需实现 `distance(q_n) -> (d: float, grad_d: ndarray(D,))`
+>
+> 基类自动推导：$h = [d]$，$\tilde{C} = (\nabla d)^T$，优化器接口不变。
+
+"距离"在此处可以广义理解为任意标量评分函数：值为 0 表示约束满足，值远离 0 表示约束被违反。
+
+### 2. 接口形式
+
+```
+class GoalSetConstraint(ABC):
+    @abstractmethod
+    def distance(q_n) -> (d: float, grad_d: ndarray(D,))
+
+    def query(q_n) -> (h: ndarray(1,), C_tilde: ndarray(1, D))
+        # 由基类自动实现：h = [d], C_tilde = grad_d[newaxis, :]
+```
+
+优化器（`CHOMPGoalSetOptimizer`）仍调用 `query()`，无需修改。
+
+### 3. 各约束实现迁移说明
+
+| 类名 | 距离函数 $d(q_n)$ | 梯度 $\nabla d$ | 目标集维度 |
+|---|---|---|---|
+| `TargetPointConstraint` | $\|q_n - q_{\text{goal}}\|$ | $(q_n - q_{\text{goal}}) / \|\cdot\|$ | 0 维（单点） |
+| `TargetHyperplaneConstraint` | $n^T q_n - \text{offset}$（有符号） | $n$ | $D-1$ 维（超平面） |
+| `TargetRegionConstraint` | $\max(\|q_n - q_{\text{goal}}\| - r,\, 0)$ | $(q_n - q_{\text{goal}}) / \|\cdot\|$（区域外） | $D$ 维（球内区域） |
+| `TargetCircleConstraint` | $\|q_n - c\| - r$（有符号） | $(q_n - c) / \|\cdot\|$ | 1 维（圆环） |
+
+### 4. 圆环约束 `TargetCircleConstraint`
+
+圆环约束是本接口的典型测试用例，对应一个**一维目标集**（二维构型空间中的圆弧）。
+
+$$
+d(q_n) = \|q_n - c\| - r
+$$
+
+$$
+\nabla d = \frac{q_n - c}{\|q_n - c\|}
+$$
+
+- $d < 0$：终点在圆内；$d > 0$：终点在圆外；$d = 0$：恰好在圆上。
+- 优化器可以自由选择**圆上哪个点**作为终点，同时兼顾平滑性与避障代价。
+- 这与论文中超平面约束的自由度概念完全一致，只是目标集形状从直线变为圆弧。
+
+几何意义：优化器在每步迭代中，将终点沿径向方向（$\nabla d$）修正，同时通过 $A^{-1}$ 将修正量传播到整条轨迹，保持平滑性。
+
 好的，我们来深入拆解一下，相比于原始的 CHOMP 算法，本文是如何引入“终点修正量”的。这部分的推导是全文的理论核心，也是理解“目标集”如何工作的关键。
 
 我将从三个方面为你详细解读：**推导过程**、**核心假设**以及**核心洞察**。
